@@ -58,13 +58,16 @@ jobs:
           - host: windows-latest
             build: pnpm build:addon --target x86_64-pc-windows-msvc
             target: x86_64-pc-windows-msvc
+            node: 24
           - host: windows-latest
             build: pnpm build:addon --target i686-pc-windows-msvc
             target: i686-pc-windows-msvc
+            node: 22
           - host: windows-latest
             target: aarch64-pc-windows-msvc
             build: pnpm build:addon --target aarch64-pc-windows-msvc
-    name: stable - ${{ matrix.settings.target }} - node@24
+            node: 24
+    name: stable - ${{ matrix.settings.target }} - node@${{ matrix.settings.node }}
     runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@v7
@@ -73,7 +76,7 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: ${{ matrix.settings.node }}
           cache: pnpm
       - name: Install
         uses: dtolnay/rust-toolchain@stable
@@ -97,7 +100,7 @@ jobs:
         uses: actions/setup-node@v6
         if: matrix.settings.target == 'i686-pc-windows-msvc'
         with:
-          node-version: 24
+          node-version: ${{ matrix.settings.node }}
           cache: pnpm
           architecture: x86
       - name: Build
@@ -110,7 +113,7 @@ jobs:
           path: '*.node'
           if-no-files-found: error
   test-windows-binding:
-    name: Test bindings on ${{ matrix.settings.target }} - node@${{ matrix.node }}
+    name: Test bindings on ${{ matrix.settings.target }} - node@24
     needs:
       - build
     strategy:
@@ -121,7 +124,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             architecture: x64
         node:
-          - '24'
+          - 24
     runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@v7
