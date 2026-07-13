@@ -1,5 +1,9 @@
-const { plus100 } = require('./index')
-
-console.assert(plus100(0) === 100, 'Simple test failed')
-
-console.info('Simple test passed')
+import("./dist/index.mjs")
+	.then(({ isSupported }) => {
+		console.assert(typeof isSupported() === "boolean", "Support probe failed");
+		console.info("Windows Capture binding loaded");
+	})
+	.catch((cause) => {
+		console.error(cause);
+		process.exitCode = 1;
+	});
