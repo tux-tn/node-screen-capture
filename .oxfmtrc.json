@@ -1,0 +1,8 @@
+{
+	"$schema": "./node_modules/oxfmt/configuration_schema.json",
+	"ignorePatterns": ["**/*.md", "**/*.rs", "**/*.toml", "**/*.yaml", "**/*.yml", "index.d.ts", "index.js"],
+	"printWidth": 120,
+	"useTabs": true,
+	"singleQuote": false,
+	"sortPackageJson": false
+}
