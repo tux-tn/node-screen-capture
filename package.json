@@ -1,105 +1,80 @@
 {
-  "name": "windows-capture",
-  "version": "1.1.1",
-  "description": "Template project for writing node package with napi-rs",
-  "main": "index.js",
-  "types": "index.d.ts",
-  "repository": {
-    "url": "git+ssh://git@github.com/napi-rs/package-template-pnpm.git",
-    "type": "git"
-  },
-  "license": "MIT",
-  "keywords": [
-    "napi-rs",
-    "NAPI",
-    "N-API",
-    "Rust",
-    "node-addon",
-    "node-addon-api"
-  ],
-  "files": [
-    "index.d.ts",
-    "index.js"
-  ],
-  "napi": {
-    "binaryName": "windows-capture",
-    "targets": [
-      "x86_64-pc-windows-msvc",
-      "i686-pc-windows-msvc",
-      "aarch64-pc-windows-msvc"
-    ]
-  },
-  "engines": {
-    "node": ">= 18.17.0 < 19 || >= 20.3.0 < 21 || >= 21.1.0"
-  },
-  "publishConfig": {
-    "registry": "https://registry.npmjs.org/",
-    "access": "public"
-  },
-  "scripts": {
-    "artifacts": "napi artifacts",
-    "bench": "node --import @oxc-node/core/register benchmark/bench.ts",
-    "build": "napi build --platform --release",
-    "build:debug": "napi build --platform",
-    "format": "run-p format:prettier format:rs format:toml",
-    "format:prettier": "prettier . -w",
-    "format:toml": "taplo format",
-    "format:rs": "cargo fmt",
-    "lint": "oxlint",
-    "prepublishOnly": "napi prepublish -t npm",
-    "test": "ava",
-    "version": "napi version"
-  },
-  "devDependencies": {
-    "@emnapi/core": "^1.5.0",
-    "@emnapi/runtime": "^1.5.0",
-    "@napi-rs/cli": "^3.2.0",
-    "@napi-rs/wasm-runtime": "^1.0.4",
-    "@oxc-node/core": "^0.1.0",
-    "@taplo/cli": "^0.7.0",
-    "@tybys/wasm-util": "^0.10.0",
-    "ava": "^8.0.0",
-    "chalk": "^5.6.2",
-    "emnapi": "^1.5.0",
-    "husky": "^9.1.7",
-    "lint-staged": "^17.0.0",
-    "npm-run-all2": "^9.0.0",
-    "oxlint": "^1.14.0",
-    "prettier": "^3.6.2",
-    "tinybench": "^6.0.0",
-    "typescript": "^6.0.0"
-  },
-  "lint-staged": {
-    "*.@(js|ts|tsx)": [
-      "oxlint --fix"
-    ],
-    "*.@(js|ts|tsx|yml|yaml|md|json)": [
-      "prettier --write"
-    ],
-    "*.toml": [
-      "taplo format"
-    ]
-  },
-  "ava": {
-    "extensions": [
-      "ts"
-    ],
-    "timeout": "2m",
-    "workerThreads": false,
-    "environmentVariables": {
-      "TS_NODE_PROJECT": "./tsconfig.json"
-    },
-    "nodeArguments": [
-      "--import",
-      "@oxc-node/core/register"
-    ]
-  },
-  "prettier": {
-    "printWidth": 120,
-    "semi": false,
-    "trailingComma": "all",
-    "singleQuote": true,
-    "arrowParens": "always"
-  },
-  "packageManager": "pnpm@11.11.0"
+	"name": "@native-capture/windows",
+	"version": "1.0.0",
+	"description": "High-performance Node.js bindings for the Windows Graphics Capture and DXGI Desktop Duplication APIs",
+	"homepage": "https://github.com/tux-tn/node-native-capture#readme",
+	"author": "Sarhan Aissi <npm@tux.tn>",
+	"main": "./dist/index.mjs",
+	"types": "./dist/index.d.mts",
+	"exports": {
+		".": "./dist/index.mjs",
+		"./package.json": "./package.json"
+	},
+	"repository": {
+		"url": "git+https://github.com/tux-tn/node-native-capture.git",
+		"type": "git"
+	},
+	"bugs": {
+		"url": "https://github.com/tux-tn/node-native-capture/issues"
+	},
+	"license": "MIT",
+	"keywords": [
+		"windows",
+		"screen-capture",
+		"screenshot",
+		"desktop-duplication",
+		"dxgi",
+		"graphics-capture",
+		"napi-rs",
+		"node-addon"
+	],
+	"files": [
+		"dist",
+		"index.js",
+		"LICENSE",
+		"README.md"
+	],
+	"napi": {
+		"packageName": "@native-capture/windows",
+		"targets": [
+			"x86_64-pc-windows-msvc",
+			"i686-pc-windows-msvc",
+			"aarch64-pc-windows-msvc"
+		]
+	},
+	"engines": {
+		"node": ">=23.5.0 || ^22.13.0 || ^20.17.0"
+	},
+	"publishConfig": {
+		"registry": "https://registry.npmjs.org/",
+		"access": "public"
+	},
+	"scripts": {
+		"artifacts": "napi artifacts",
+		"build": "tsdown",
+		"build:addon": "napi build --platform --release",
+		"build:addon:debug": "napi build --platform",
+		"format": "oxfmt --check",
+		"format:fix": "oxfmt",
+		"format:rust": "cargo fmt",
+		"format:toml": "taplo format",
+		"lint": "oxlint",
+		"lint:fix": "oxlint --fix",
+		"prepublishOnly": "pnpm build && napi prepublish -t npm",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"version": "napi version"
+	},
+	"devDependencies": {
+		"@napi-rs/cli": "^3.7.3",
+		"@taplo/cli": "^0.7.0",
+		"@types/node": "^26.1.1",
+		"oxfmt": "0.58.0",
+		"oxlint": "^1.73.0",
+		"oxlint-tsgolint": "^0.24.0",
+		"tsdown": "^0.22.5",
+		"typescript": "^7.0.2",
+		"vitest": "^4.1.10"
+	},
+	"packageManager": "pnpm@11.11.0"
 }
