@@ -9,7 +9,7 @@ permissions:
   push:
     branches:
       - main
-    tags-ignore:
+    tags:
       - '**'
     paths-ignore:
       - '**/*.md'
@@ -38,6 +38,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - name: Install Linux native dependencies
+        run: sudo apt-get update && sudo apt-get install --yes libpipewire-0.3-dev libclang-dev
       - name: Install dependencies
         run: pnpm install
       - name: Oxlint
@@ -49,7 +51,7 @@ jobs:
       - name: Cargo fmt
         run: cargo fmt -- --check
       - name: Clippy
-        run: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
   build:
     strategy:
       fail-fast: false
@@ -66,6 +68,14 @@ jobs:
           - host: windows-latest
             target: aarch64-pc-windows-msvc
             build: pnpm build:addon --target aarch64-pc-windows-msvc
+            node: 24
+          - host: ubuntu-latest
+            build: pnpm build:addon --target x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-gnu
+            node: 24
+          - host: ubuntu-24.04-arm
+            build: pnpm build:addon --target aarch64-unknown-linux-gnu
+            target: aarch64-unknown-linux-gnu
             node: 24
     name: stable - ${{ matrix.settings.target }} - node@${{ matrix.settings.node }}
     runs-on: ${{ matrix.settings.host }}
@@ -94,6 +104,9 @@ jobs:
             .cargo-cache
             target/
           key: ${{ matrix.settings.target }}-cargo-${{ matrix.settings.host }}
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes libpipewire-0.3-dev libclang-dev
       - name: Install dependencies
         run: pnpm install
       - name: Setup node x86
@@ -112,7 +125,7 @@ jobs:
           name: bindings-${{ matrix.settings.target }}
           path: '*.node'
           if-no-files-found: error
-  test-windows-binding:
+  test-native-binding:
     name: Test bindings on ${{ matrix.settings.target }} - node@24
     needs:
       - build
@@ -122,6 +135,9 @@ jobs:
         settings:
           - host: windows-latest
             target: x86_64-pc-windows-msvc
+            architecture: x64
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
             architecture: x64
         node:
           - 24
@@ -136,6 +152,9 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: pnpm
           architecture: ${{ matrix.settings.architecture }}
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes libpipewire-0.3-dev
       - name: Install dependencies
         run: pnpm install
       - name: Download artifacts
@@ -146,15 +165,16 @@ jobs:
       - name: Build TypeScript wrapper
         run: pnpm build
       - name: Test native binding
-        run: node simple-test.js
+        run: node ./scripts/simple-test.js
       - name: Test
         run: pnpm test
   publish:
+    if: github.event_name == 'push' && github.ref_type == 'tag' && github.event.created
     name: Publish
     runs-on: ubuntu-latest
     needs:
       - lint
-      - test-windows-binding
+      - test-native-binding
     steps:
       - uses: actions/checkout@v7
       - name: setup pnpm
@@ -180,17 +200,8 @@ jobs:
       - name: Publish
         run: |
           npm config set provenance true
-          if git log -1 --pretty=%B | grep "^v\?[0-9]\+\.[0-9]\+\.[0-9]\+$";
-          then
-            echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
-            npm publish --access public
-          elif git log -1 --pretty=%B | grep "^v\?[0-9]\+\.[0-9]\+\.[0-9]\+";
-          then
-            echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
-            npm publish --tag next --access public
-          else
-            echo "Not a release, skipping publish"
-          fi
+          echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
+          npm publish --access public
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
