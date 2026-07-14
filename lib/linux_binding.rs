@@ -392,7 +392,7 @@ impl ScreenCapture {
     let thread_stop = Arc::clone(&stop);
     let options = self.options.clone();
     let thread = thread::Builder::new()
-      .name("native-capture-wayland".to_owned())
+      .name("screen-capture-wayland".to_owned())
       .spawn(move || {
         let result = run_wayland_capture(options, thread_stop, on_frame);
         on_closed();
@@ -500,7 +500,7 @@ fn run_pipewire_stream(
     .map_err(|error| error.to_string())?;
   let stream = pw::stream::StreamRc::new(
     core,
-    "native-capture-wayland",
+    "screen-capture-wayland",
     properties! {
       *pw::keys::MEDIA_TYPE => "Video",
       *pw::keys::MEDIA_CATEGORY => "Capture",

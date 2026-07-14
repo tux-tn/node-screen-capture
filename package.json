@@ -2,7 +2,7 @@
 	"name": "@screen-capture/node",
 	"version": "1.0.0",
 	"description": "Cross-platform native screen capture for Node.js on Windows and Linux/Wayland",
-	"homepage": "https://github.com/tux-tn/node-native-capture#readme",
+	"homepage": "https://github.com/tux-tn/node-screen-capture#readme",
 	"author": "Sarhan Aissi <npm@tux.tn>",
 	"main": "./dist/index.mjs",
 	"types": "./dist/index.d.mts",
@@ -11,11 +11,11 @@
 		"./package.json": "./package.json"
 	},
 	"repository": {
-		"url": "git+https://github.com/tux-tn/node-native-capture.git",
+		"url": "git+https://github.com/tux-tn/node-screen-capture.git",
 		"type": "git"
 	},
 	"bugs": {
-		"url": "https://github.com/tux-tn/node-native-capture/issues"
+		"url": "https://github.com/tux-tn/node-screen-capture/issues"
 	},
 	"license": "MIT",
 	"keywords": [
@@ -37,7 +37,7 @@
 		"README.md"
 	],
 	"napi": {
-		"binaryName": "screen_capture_node",
+		"binaryName": "screen_capture",
 		"packageName": "@screen-capture/node",
 		"targets": [
 			"x86_64-pc-windows-msvc",

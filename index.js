@@ -74,7 +74,7 @@ function requireNative() {
   } else if (process.platform === 'android') {
     if (process.arch === 'arm64') {
       try {
-        return require('./screen_capture_node.android-arm64.node')
+        return require('./screen_capture.android-arm64.node')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -90,7 +90,7 @@ function requireNative() {
       }
     } else if (process.arch === 'arm') {
       try {
-        return require('./screen_capture_node.android-arm-eabi.node')
+        return require('./screen_capture.android-arm-eabi.node')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -111,7 +111,7 @@ function requireNative() {
     if (process.arch === 'x64') {
       if ((process.config && process.config.variables && process.config.variables.shlib_suffix === 'dll.a') || (process.config && process.config.variables && process.config.variables.node_target_type === 'shared_library')) {
         try {
-        return require('./screen_capture_node.win32-x64-gnu.node')
+        return require('./screen_capture.win32-x64-gnu.node')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -127,7 +127,7 @@ function requireNative() {
       }
       } else {
         try {
-        return require('./screen_capture_node.win32-x64-msvc.node')
+        return require('./screen_capture.win32-x64-msvc.node')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -144,7 +144,7 @@ function requireNative() {
       }
     } else if (process.arch === 'ia32') {
       try {
-        return require('./screen_capture_node.win32-ia32-msvc.node')
+        return require('./screen_capture.win32-ia32-msvc.node')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -160,7 +160,7 @@ function requireNative() {
       }
     } else if (process.arch === 'arm64') {
       try {
-        return require('./screen_capture_node.win32-arm64-msvc.node')
+        return require('./screen_capture.win32-arm64-msvc.node')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -179,7 +179,7 @@ function requireNative() {
     }
   } else if (process.platform === 'darwin') {
     try {
-      return require('./screen_capture_node.darwin-universal.node')
+      return require('./screen_capture.darwin-universal.node')
     } catch (e) {
       loadErrors.push(e)
     }
@@ -195,7 +195,7 @@ function requireNative() {
     }
     if (process.arch === 'x64') {
       try {
-        return require('./screen_capture_node.darwin-x64.node')
+        return require('./screen_capture.darwin-x64.node')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -211,7 +211,7 @@ function requireNative() {
       }
     } else if (process.arch === 'arm64') {
       try {
-        return require('./screen_capture_node.darwin-arm64.node')
+        return require('./screen_capture.darwin-arm64.node')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -231,7 +231,7 @@ function requireNative() {
   } else if (process.platform === 'freebsd') {
     if (process.arch === 'x64') {
       try {
-        return require('./screen_capture_node.freebsd-x64.node')
+        return require('./screen_capture.freebsd-x64.node')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -247,7 +247,7 @@ function requireNative() {
       }
     } else if (process.arch === 'arm64') {
       try {
-        return require('./screen_capture_node.freebsd-arm64.node')
+        return require('./screen_capture.freebsd-arm64.node')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -268,7 +268,7 @@ function requireNative() {
     if (process.arch === 'x64') {
       if (isMusl()) {
         try {
-          return require('./screen_capture_node.linux-x64-musl.node')
+          return require('./screen_capture.linux-x64-musl.node')
         } catch (e) {
           loadErrors.push(e)
         }
@@ -284,7 +284,7 @@ function requireNative() {
         }
       } else {
         try {
-          return require('./screen_capture_node.linux-x64-gnu.node')
+          return require('./screen_capture.linux-x64-gnu.node')
         } catch (e) {
           loadErrors.push(e)
         }
@@ -302,7 +302,7 @@ function requireNative() {
     } else if (process.arch === 'arm64') {
       if (isMusl()) {
         try {
-          return require('./screen_capture_node.linux-arm64-musl.node')
+          return require('./screen_capture.linux-arm64-musl.node')
         } catch (e) {
           loadErrors.push(e)
         }
@@ -318,7 +318,7 @@ function requireNative() {
         }
       } else {
         try {
-          return require('./screen_capture_node.linux-arm64-gnu.node')
+          return require('./screen_capture.linux-arm64-gnu.node')
         } catch (e) {
           loadErrors.push(e)
         }
@@ -336,7 +336,7 @@ function requireNative() {
     } else if (process.arch === 'arm') {
       if (isMusl()) {
         try {
-          return require('./screen_capture_node.linux-arm-musleabihf.node')
+          return require('./screen_capture.linux-arm-musleabihf.node')
         } catch (e) {
           loadErrors.push(e)
         }
@@ -352,7 +352,7 @@ function requireNative() {
         }
       } else {
         try {
-          return require('./screen_capture_node.linux-arm-gnueabihf.node')
+          return require('./screen_capture.linux-arm-gnueabihf.node')
         } catch (e) {
           loadErrors.push(e)
         }
@@ -370,7 +370,7 @@ function requireNative() {
     } else if (process.arch === 'loong64') {
       if (isMusl()) {
         try {
-          return require('./screen_capture_node.linux-loong64-musl.node')
+          return require('./screen_capture.linux-loong64-musl.node')
         } catch (e) {
           loadErrors.push(e)
         }
@@ -386,7 +386,7 @@ function requireNative() {
         }
       } else {
         try {
-          return require('./screen_capture_node.linux-loong64-gnu.node')
+          return require('./screen_capture.linux-loong64-gnu.node')
         } catch (e) {
           loadErrors.push(e)
         }
@@ -404,7 +404,7 @@ function requireNative() {
     } else if (process.arch === 'riscv64') {
       if (isMusl()) {
         try {
-          return require('./screen_capture_node.linux-riscv64-musl.node')
+          return require('./screen_capture.linux-riscv64-musl.node')
         } catch (e) {
           loadErrors.push(e)
         }
@@ -420,7 +420,7 @@ function requireNative() {
         }
       } else {
         try {
-          return require('./screen_capture_node.linux-riscv64-gnu.node')
+          return require('./screen_capture.linux-riscv64-gnu.node')
         } catch (e) {
           loadErrors.push(e)
         }
@@ -437,7 +437,7 @@ function requireNative() {
       }
     } else if (process.arch === 'ppc64') {
       try {
-        return require('./screen_capture_node.linux-ppc64-gnu.node')
+        return require('./screen_capture.linux-ppc64-gnu.node')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -453,7 +453,7 @@ function requireNative() {
       }
     } else if (process.arch === 's390x') {
       try {
-        return require('./screen_capture_node.linux-s390x-gnu.node')
+        return require('./screen_capture.linux-s390x-gnu.node')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -473,7 +473,7 @@ function requireNative() {
   } else if (process.platform === 'openharmony') {
     if (process.arch === 'arm64') {
       try {
-        return require('./screen_capture_node.openharmony-arm64.node')
+        return require('./screen_capture.openharmony-arm64.node')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -489,7 +489,7 @@ function requireNative() {
       }
     } else if (process.arch === 'x64') {
       try {
-        return require('./screen_capture_node.openharmony-x64.node')
+        return require('./screen_capture.openharmony-x64.node')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -505,7 +505,7 @@ function requireNative() {
       }
     } else if (process.arch === 'arm') {
       try {
-        return require('./screen_capture_node.openharmony-arm.node')
+        return require('./screen_capture.openharmony-arm.node')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -543,7 +543,7 @@ if (!nativeBinding || forceWasi) {
   let wasiBinding = null
   let wasiBindingError = null
   try {
-    wasiBinding = require('./screen_capture_node.wasi.cjs')
+    wasiBinding = require('./screen_capture.wasi.cjs')
     nativeBinding = wasiBinding
   } catch (err) {
     if (forceWasi) {
