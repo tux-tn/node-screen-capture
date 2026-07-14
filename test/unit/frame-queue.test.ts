@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { LatestFrameQueue } from "../src/frame-queue.js";
+import { LatestFrameQueue } from "../../src/frame-queue.js";
 
 describe("LatestFrameQueue", () => {
 	test("resolves a pending consumer with the next frame", async () => {
