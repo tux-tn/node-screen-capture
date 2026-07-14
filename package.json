@@ -1,5 +1,5 @@
 {
-	"name": "@native-capture/core",
+	"name": "@screen-capture/node",
 	"version": "1.0.0",
 	"description": "Cross-platform native screen capture for Node.js on Windows and Linux/Wayland",
 	"homepage": "https://github.com/tux-tn/node-native-capture#readme",
@@ -37,8 +37,8 @@
 		"README.md"
 	],
 	"napi": {
-		"binaryName": "native-capture",
-		"packageName": "@native-capture/core",
+		"binaryName": "screen_capture_node",
+		"packageName": "@screen-capture/node",
 		"targets": [
 			"x86_64-pc-windows-msvc",
 			"i686-pc-windows-msvc",

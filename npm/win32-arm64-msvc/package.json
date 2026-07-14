@@ -1,12 +1,12 @@
 {
-	"name": "@native-capture/core-win32-arm64-msvc",
+	"name": "@screen-capture/node-win32-arm64-msvc",
 	"version": "1.0.0",
 	"cpu": [
 		"arm64"
 	],
-	"main": "native-capture.win32-arm64-msvc.node",
+	"main": "screen_capture_node.win32-arm64-msvc.node",
 	"files": [
-		"native-capture.win32-arm64-msvc.node"
+		"screen_capture_node.win32-arm64-msvc.node"
 	],
 	"description": "Cross-platform native screen capture for Node.js on Windows and Linux/Wayland",
 	"keywords": [
@@ -28,7 +28,7 @@
 		"node": ">=23.5.0 || ^22.13.0 || ^20.17.0"
 	},
 	"repository": {
-		"url": "git+https://github.com/tux-tn/node-native-capture.git",
+		"url": "git+https://github.com/tux-tn/node-screen_capture_node.git",
 		"type": "git"
 	},
 	"bugs": {

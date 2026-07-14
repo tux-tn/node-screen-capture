@@ -1,3 +1,3 @@
-# `@native-capture/core-win32-ia32-msvc`
+# `@screen-capture/node-win32-ia32-msvc`
 
-This is the **i686-pc-windows-msvc** binary for `@native-capture/core`
+This is the **i686-pc-windows-msvc** binary for `@screen-capture/node`

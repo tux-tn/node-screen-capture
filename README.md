@@ -1,4 +1,4 @@
-# @native-capture/core
+# @screen-capture/node
 
 Cross-platform native screen capture for Node.js. Windows uses [`windows-capture` 2.0.0](https://github.com/NiiightmareXD/windows-capture); Linux/Wayland uses the XDG ScreenCast portal and PipeWire.
 
@@ -56,11 +56,11 @@ On Wayland, every new capture session opens the desktop portal. The user chooses
 ## Installation
 
 ```bash
-npm install @native-capture/core
+npm install @screen-capture/node
 ```
 
 ```bash
-pnpm add @native-capture/core
+pnpm add @screen-capture/node
 ```
 
 ## Quick start
@@ -71,7 +71,7 @@ Capture the primary monitor, save one PNG, and stop the native session:
 import {
   ImageFormat,
   ScreenCapture,
-} from '@native-capture/core'
+} from '@screen-capture/node'
 
 const capture = new ScreenCapture({
   monitorIndex: 1,
@@ -116,7 +116,7 @@ class ScreenCapture implements AsyncIterable<Frame> {
 - The async iterator starts and stops the session automatically:
 
 ```js
-import { ScreenCapture } from '@native-capture/core'
+import { ScreenCapture } from '@screen-capture/node'
 
 const capture = new ScreenCapture({ monitorIndex: 1 })
 
@@ -161,7 +161,7 @@ interface CaptureOptions {
 Examples of each target:
 
 ```js
-import { ScreenCapture } from '@native-capture/core'
+import { ScreenCapture } from '@screen-capture/node'
 
 new ScreenCapture({ monitorIndex: 2 })
 new ScreenCapture({ windowName: 'Visual Studio Code' })
@@ -186,7 +186,7 @@ interface CaptureApiSupport {
 import {
   captureApiSupport,
   isSupported,
-} from '@native-capture/core'
+} from '@screen-capture/node'
 
 if (!isSupported()) {
   throw new Error('Native screen capture is unavailable')
@@ -236,7 +236,7 @@ interface DirtyRegion {
 import {
   ImageFormat,
   ScreenCapture,
-} from '@native-capture/core'
+} from '@screen-capture/node'
 
 const capture = new ScreenCapture({ monitorIndex: 1 })
 await capture.start()
@@ -315,7 +315,7 @@ import {
   windowFromContainsName,
   windowFromHandle,
   windowFromName,
-} from '@native-capture/core'
+} from '@screen-capture/node'
 
 console.table(enumerateMonitors())
 console.table(enumerateWindows())
@@ -361,7 +361,7 @@ import {
   DxgiDuplicationFormat,
   DxgiDuplicationSession,
   ImageFormat,
-} from '@native-capture/core'
+} from '@screen-capture/node'
 
 const session = new DxgiDuplicationSession({
   monitorIndex: 1,
@@ -399,7 +399,7 @@ import {
   ImageEncoder,
   ImageEncoderPixelFormat,
   ImageFormat,
-} from '@native-capture/core'
+} from '@screen-capture/node'
 
 const encoder = new ImageEncoder(
   ImageFormat.Png,
@@ -468,7 +468,7 @@ import {
   VideoCodec,
   VideoEncoder,
   ScreenCapture,
-} from '@native-capture/core'
+} from '@screen-capture/node'
 
 const capture = new ScreenCapture({ monitorIndex: 1 })
 await capture.start()
@@ -506,7 +506,7 @@ In-memory output:
 import {
   ContainerFormat,
   VideoEncoder,
-} from '@native-capture/core'
+} from '@screen-capture/node'
 
 const encoder = new VideoEncoder({
   video: { width: 1280, height: 720 },
@@ -525,7 +525,7 @@ import {
   ContainerFormat,
   VideoCodec,
   VideoEncoder,
-} from '@native-capture/core'
+} from '@screen-capture/node'
 
 const encoder = new VideoEncoder({
   path: 'capture-with-audio.mp4',
