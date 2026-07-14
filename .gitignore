@@ -197,3 +197,6 @@ Temporary Items
 
 # tmp dir for smoke tests generated files
 tmp/
+
+# npm dir is created at build time by napi-rs
+npm/
