@@ -1,5 +1,5 @@
 import { performance } from "node:perf_hooks";
-
+import { mkdir } from "node:fs/promises";
 import { ColorFormat, ScreenCapture, enumerateMonitors, isSupported } from "../dist/index.mjs";
 
 if (!isSupported()) {
@@ -50,7 +50,8 @@ try {
 		const frame = await capture.nextFrame();
 		const waitMs = performance.now() - waitStartedAt;
 		if (!frame) break;
-		frame.saveAsImage(`frame-${totalFrames}.png`);
+		await mkdir("tmp", { recursive: true });
+		frame.saveAsImage(`tmp/frame-${totalFrames}.png`);
 		totalFrames += 1;
 		intervalFrames += 1;
 		intervalWaitMs += waitMs;

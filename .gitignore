@@ -194,3 +194,6 @@ Temporary Items
 ### macOS Patch ###
 # iCloud generated files
 *.icloud
+
+# tmp dir for smoke tests generated files
+tmp/
