@@ -1,24 +1,25 @@
-# @native-capture/windows
+# @native-capture/core
 
-Windows screen-capture, desktop-duplication, image-encoding, and video-encoding APIs for Node.js. The package is a native NAPI binding for [`windows-capture` 2.0.0](https://github.com/NiiightmareXD/windows-capture).
+Cross-platform native screen capture for Node.js. Windows uses [`windows-capture` 2.0.0](https://github.com/NiiightmareXD/windows-capture); Linux/Wayland uses the XDG ScreenCast portal and PipeWire.
 
 ## Table of contents
 
 - [Requirements](#requirements)
+- [Platform support](#platform-support)
 - [Installation](#installation)
 - [Quick start](#quick-start)
-- [Windows Graphics Capture](#windows-graphics-capture)
-  - [`WindowsCapture`](#windowscapture)
+- [Screen capture](#screen-capture)
+  - [`ScreenCapture`](#screencapture)
   - [Capture targets and options](#capture-targets-and-options)
   - [Capability checks](#capability-checks)
 - [Frames](#frames)
-- [Monitor and window discovery](#monitor-and-window-discovery)
+- [Monitor and window discovery (Windows only)](#monitor-and-window-discovery-windows-only)
   - [Monitor functions](#monitor-functions)
   - [Window functions](#window-functions)
 - [DXGI Desktop Duplication](#dxgi-desktop-duplication)
 - [Image encoding](#image-encoding)
   - [`ImageEncoder`](#imageencoder)
-- [Video encoding](#video-encoding)
+- [Video encoding (Windows only)](#video-encoding-windows-only)
   - [`VideoEncoder`](#videoencoder)
 - [Constants and supported values](#constants-and-supported-values)
 - [Rust compatibility](#rust-compatibility)
@@ -27,20 +28,39 @@ Windows screen-capture, desktop-duplication, image-encoding, and video-encoding 
 
 ## Requirements
 
-- Windows 10 version 1903 or newer
 - Node.js 20.17+, 22.13+, or 23.5+
-- A Windows MSVC runtime matching the published native package
+- Windows 10 version 1903 or newer with the MSVC runtime, or
+- Linux with Wayland, PipeWire 0.3, and a working `xdg-desktop-portal` ScreenCast backend
 
-This package is Windows-only. Check `isSupported()` and `captureApiSupport()` before enabling optional Windows Graphics Capture features.
+Check `isSupported()` and `captureApiSupport()` before starting capture. Wayland always delegates source selection to the desktop portal.
+
+## Platform support
+
+| Capability | Windows | Linux/Wayland |
+| --- | --- | --- |
+| Screen or window capture | Yes | Yes, through the XDG ScreenCast portal |
+| Promise and async-iterator frame API | Yes | Yes |
+| Cursor capture | Yes | Yes, when the portal supports it |
+| Monitor and window discovery | Yes | No; Wayland intentionally does not expose global source enumeration |
+| Target selection by index, title, or native handle | Yes | No; the portal owns source selection |
+| Frame crop and packed RGBA/BGRA buffers | Yes | Yes |
+| JPEG, PNG, GIF, TIFF, and BMP encoding | Yes | Yes |
+| JPEG XR and RGB16F image encoding | Yes | No |
+| DXGI Desktop Duplication | Yes | No |
+| Video encoding | Yes | No |
+
+The public TypeScript surface is shared across both backends. `ScreenCapture` is the platform-neutral capture class. Unsupported platform-specific methods throw an explicit error instead of silently changing behavior.
+
+On Wayland, every new capture session opens the desktop portal. The user chooses the actual monitor or window; applications cannot bypass that consent dialog or enumerate sources ahead of time.
 
 ## Installation
 
 ```bash
-npm install @native-capture/windows
+npm install @native-capture/core
 ```
 
 ```bash
-pnpm add @native-capture/windows
+pnpm add @native-capture/core
 ```
 
 ## Quick start
@@ -50,10 +70,10 @@ Capture the primary monitor, save one PNG, and stop the native session:
 ```js
 import {
   ImageFormat,
-  WindowsCapture,
-} from '@native-capture/windows'
+  ScreenCapture,
+} from '@native-capture/core'
 
-const capture = new WindowsCapture({
+const capture = new ScreenCapture({
   monitorIndex: 1,
   colorFormat: 'bgra8',
 })
@@ -73,14 +93,14 @@ if (frame) {
 await capture.stop()
 ```
 
-`monitorIndex` is one-based. If no capture target is provided, monitor 1 is used.
+`monitorIndex` is one-based on Windows. On Wayland, the same call requests a monitor and the portal asks the user which monitor to share.
 
-## Windows Graphics Capture
+## Screen capture
 
-### `WindowsCapture`
+### `ScreenCapture`
 
 ```ts
-class WindowsCapture implements AsyncIterable<Frame> {
+class ScreenCapture implements AsyncIterable<Frame> {
   constructor(options: CaptureOptions)
   start(): Promise<void>
   nextFrame(): Promise<Frame | undefined>
@@ -96,9 +116,9 @@ class WindowsCapture implements AsyncIterable<Frame> {
 - The async iterator starts and stops the session automatically:
 
 ```js
-import { WindowsCapture } from '@native-capture/windows'
+import { ScreenCapture } from '@native-capture/core'
 
-const capture = new WindowsCapture({ monitorIndex: 1 })
+const capture = new ScreenCapture({ monitorIndex: 1 })
 
 for await (const frame of capture) {
   processFrame(frame)
@@ -108,7 +128,7 @@ for await (const frame of capture) {
 
 ### Capture targets and options
 
-Exactly one target may be selected. If all target fields are omitted, monitor 1 is captured.
+Exactly one target may be selected. If all target fields are omitted, Windows captures monitor 1 and Wayland requests a monitor through the portal.
 
 ```ts
 interface CaptureOptions {
@@ -127,26 +147,26 @@ interface CaptureOptions {
 
 | Option | Description |
 | --- | --- |
-| `monitorIndex` | One-based monitor index. |
-| `windowName` | Captures the first top-level window whose title contains this string. |
-| `windowHandle` | Captures a native `HWND` represented as a JavaScript number. |
-| `usePicker` | Opens the Windows Graphics Capture picker. The picker runs on a dedicated native thread. |
-| `cursorCapture` | `true` includes the cursor, `false` excludes it, and omission uses the Windows default. |
-| `drawBorder` | `true` draws the capture border, `false` disables it, and omission uses the Windows default. |
-| `includeSecondaryWindows` | Controls secondary-window capture. Omission uses the Windows default. |
-| `minimumUpdateIntervalMs` | Minimum interval between updates. Omission uses the Windows default. |
-| `dirtyRegions` | `true` reports and renders dirty regions, `false` reports only, and omission uses the Windows default. |
-| `colorFormat` | Requested frame format. Defaults to `ColorFormat.Bgra8`. |
+| `monitorIndex` | Windows: one-based monitor index. Wayland: requests a monitor; the numeric index cannot select it. |
+| `windowName` | Windows: captures the first top-level window whose title contains this string. Wayland: requests a window; the title cannot select it. |
+| `windowHandle` | Windows: captures a native `HWND`. Wayland: requests a window; the handle cannot select it. |
+| `usePicker` | Opens the native Windows picker or allows monitor/window selection in the Wayland portal. |
+| `cursorCapture` | Includes or excludes the cursor when supported. |
+| `drawBorder` | Windows-only capture-border control. |
+| `includeSecondaryWindows` | Windows-only secondary-window control. |
+| `minimumUpdateIntervalMs` | Windows-only minimum interval between updates. |
+| `dirtyRegions` | Windows-only dirty-region reporting and rendering control. |
+| `colorFormat` | Requested frame format. Defaults to `ColorFormat.Bgra8`; Wayland supports `rgba8` and `bgra8`. |
 
 Examples of each target:
 
 ```js
-import { WindowsCapture } from '@native-capture/windows'
+import { ScreenCapture } from '@native-capture/core'
 
-new WindowsCapture({ monitorIndex: 2 })
-new WindowsCapture({ windowName: 'Visual Studio Code' })
-new WindowsCapture({ windowHandle: hwnd })
-new WindowsCapture({ usePicker: true })
+new ScreenCapture({ monitorIndex: 2 })
+new ScreenCapture({ windowName: 'Visual Studio Code' })
+new ScreenCapture({ windowHandle: hwnd })
+new ScreenCapture({ usePicker: true })
 ```
 
 ### Capability checks
@@ -166,16 +186,16 @@ interface CaptureApiSupport {
 import {
   captureApiSupport,
   isSupported,
-} from '@native-capture/windows'
+} from '@native-capture/core'
 
 if (!isSupported()) {
-  throw new Error('Windows Graphics Capture is unavailable')
+  throw new Error('Native screen capture is unavailable')
 }
 
 console.log(captureApiSupport())
 ```
 
-`isSupported()` checks the core Graphics Capture API. `captureApiSupport()` reports support for the core API and each optional setting independently.
+`isSupported()` checks the native capture backend for the current platform. `captureApiSupport()` reports the core backend and each optional setting independently.
 
 ## Frames
 
@@ -192,7 +212,7 @@ class Frame {
 
   crop(startX: number, startY: number, endX: number, endY: number): Frame
   encode(format: ImageFormat): Buffer
-  saveAsImage(path: string, format: ImageFormat): void
+  saveAsImage(path: string, format?: ImageFormat): void
 }
 
 interface DirtyRegion {
@@ -206,18 +226,19 @@ interface DirtyRegion {
 - `buffer` contains packed pixel bytes with GPU row padding removed.
 - `rowPitch` is the packed byte count per row.
 - `depthPitch` is the packed byte count for the entire frame.
-- `timestamp` is the Windows Graphics Capture timestamp in 100-nanosecond ticks.
-- `dirtyRegions` contains changed rectangles when dirty-region reporting is enabled.
+- `timestamp` uses 100-nanosecond ticks. Windows uses the platform capture clock; Wayland timestamps are relative to the current capture session.
+- `dirtyRegions` contains changed rectangles on Windows when reporting is enabled. Wayland currently returns an empty array.
 - `crop()` uses an exclusive end coordinate. Invalid rectangles throw.
 - `encode()` and `saveAsImage()` support `rgba8` and `bgra8`. `rgba16F` frames must be converted before image encoding.
+- `saveAsImage()` defaults to PNG when `format` is omitted.
 
 ```js
 import {
   ImageFormat,
-  WindowsCapture,
-} from '@native-capture/windows'
+  ScreenCapture,
+} from '@native-capture/core'
 
-const capture = new WindowsCapture({ monitorIndex: 1 })
+const capture = new ScreenCapture({ monitorIndex: 1 })
 await capture.start()
 const frame = await capture.nextFrame()
 
@@ -231,7 +252,7 @@ if (frame) {
 await capture.stop()
 ```
 
-## Monitor and window discovery
+## Monitor and window discovery (Windows only)
 
 ### Monitor functions
 
@@ -252,7 +273,7 @@ interface MonitorInfo {
 }
 ```
 
-`index` is one-based. `handle` is the native `HMONITOR` represented as a JavaScript number.
+These functions are Windows-only. `index` is one-based and `handle` is the native `HMONITOR` represented as a JavaScript number. Wayland callers receive an explicit unsupported error because source enumeration is not available through the ScreenCast portal.
 
 ### Window functions
 
@@ -294,7 +315,7 @@ import {
   windowFromContainsName,
   windowFromHandle,
   windowFromName,
-} from '@native-capture/windows'
+} from '@native-capture/core'
 
 console.table(enumerateMonitors())
 console.table(enumerateWindows())
@@ -308,7 +329,7 @@ console.log(windowFromHandle(hwnd))
 
 ## DXGI Desktop Duplication
 
-DXGI Desktop Duplication is synchronous and is useful when the caller controls its own capture loop.
+DXGI Desktop Duplication is a Windows-only synchronous API. On Wayland, use `ScreenCapture`, which receives frames asynchronously from PipeWire after portal selection.
 
 ```ts
 class DxgiDuplicationSession {
@@ -340,7 +361,7 @@ import {
   DxgiDuplicationFormat,
   DxgiDuplicationSession,
   ImageFormat,
-} from '@native-capture/windows'
+} from '@native-capture/core'
 
 const session = new DxgiDuplicationSession({
   monitorIndex: 1,
@@ -378,7 +399,7 @@ import {
   ImageEncoder,
   ImageEncoderPixelFormat,
   ImageFormat,
-} from '@native-capture/windows'
+} from '@native-capture/core'
 
 const encoder = new ImageEncoder(
   ImageFormat.Png,
@@ -388,9 +409,13 @@ const encoder = new ImageEncoder(
 const png = encoder.encode(rawBgraBuffer, width, height)
 ```
 
-## Video encoding
+JPEG XR and RGB16F image encoding are Windows-only. The Wayland backend supports JPEG, PNG, GIF, TIFF, and BMP from packed `rgba8` or `bgra8` pixels.
+
+## Video encoding (Windows only)
 
 ### `VideoEncoder`
+
+`VideoEncoder` uses Windows Media Foundation. Constructing it on Wayland throws an explicit unsupported error.
 
 ```ts
 class VideoEncoder {
@@ -442,10 +467,10 @@ import {
   ContainerFormat,
   VideoCodec,
   VideoEncoder,
-  WindowsCapture,
-} from '@native-capture/windows'
+  ScreenCapture,
+} from '@native-capture/core'
 
-const capture = new WindowsCapture({ monitorIndex: 1 })
+const capture = new ScreenCapture({ monitorIndex: 1 })
 await capture.start()
 const firstFrame = await capture.nextFrame()
 
@@ -481,7 +506,7 @@ In-memory output:
 import {
   ContainerFormat,
   VideoEncoder,
-} from '@native-capture/windows'
+} from '@native-capture/core'
 
 const encoder = new VideoEncoder({
   video: { width: 1280, height: 720 },
@@ -500,7 +525,7 @@ import {
   ContainerFormat,
   VideoCodec,
   VideoEncoder,
-} from '@native-capture/windows'
+} from '@native-capture/core'
 
 const encoder = new VideoEncoder({
   path: 'capture-with-audio.mp4',
@@ -532,11 +557,11 @@ encoder.finish()
 
 ### `ImageFormat`
 
-`Jpeg`, `Png`, `Gif`, `Tiff`, `Bmp`, `JpegXr`
+`Jpeg`, `Png`, `Gif`, `Tiff`, `Bmp`, `JpegXr` (`JpegXr` is Windows-only)
 
 ### `ImageEncoderPixelFormat`
 
-`Rgb16F`, `Bgra8`, `Rgba8`
+`Rgb16F`, `Bgra8`, `Rgba8` (`Rgb16F` is Windows-only)
 
 ### `DxgiDuplicationFormat`
 
@@ -556,13 +581,13 @@ encoder.finish()
 
 ## Rust compatibility
 
-The binding follows the application-facing portions of [`windows-capture` 2.0.0](https://docs.rs/windows-capture/2.0.0/windows_capture/):
+On Windows, the binding follows the application-facing portions of [`windows-capture` 2.0.0](https://docs.rs/windows-capture/2.0.0/windows_capture/):
 
 | Rust capability | Node.js API |
 | --- | --- |
-| Graphics Capture API and `Settings` | `WindowsCapture` and `CaptureOptions` |
+| Graphics Capture API and `Settings` | `ScreenCapture` and `CaptureOptions` |
 | `GraphicsCaptureApiHandler` frame lifecycle | `Frame`, `nextFrame()`, and async iteration |
-| Capture thread lifecycle | Promise-based `WindowsCapture.start()`, `nextFrame()`, and `stop()` |
+| Capture thread lifecycle | Promise-based `ScreenCapture.start()`, `nextFrame()`, and `stop()` |
 | `Frame` and `FrameBuffer` | `Frame` and packed Node.js `Buffer` data |
 | `Monitor` and `Window` | Monitor and window discovery functions |
 | `GraphicsCapturePicker` | `usePicker: true` |
@@ -570,6 +595,8 @@ The binding follows the application-facing portions of [`windows-capture` 2.0.0]
 | `ImageEncoder` | `ImageEncoder`, `Frame.encode()`, and `Frame.saveAsImage()` |
 | `VideoEncoder` | `VideoEncoder`, audio settings, codecs, and containers |
 | Graphics Capture feature probes | `isSupported()` and `captureApiSupport()` |
+
+On Linux, `ScreenCapture` implements the same promise and async-iterator lifecycle with the XDG ScreenCast portal and PipeWire. The portal's security model prevents parity for source discovery and direct source selection; DXGI and Windows Media Foundation APIs remain Windows-only.
 
 Raw COM interfaces, D3D11 devices, textures, and surfaces are intentionally not exposed to JavaScript. Frames are represented as owned Node.js buffers so their lifetime is safe across the promise and async-iterator boundaries.
 
@@ -584,11 +611,11 @@ pnpm format
 pnpm test
 ```
 
-Rust formatting uses `cargo fmt`; TypeScript and JavaScript formatting use Oxfmt; linting uses Oxlint. Native builds require the Windows MSVC Rust target.
+Rust formatting uses `cargo fmt`; TypeScript and JavaScript formatting use Oxfmt; linting uses Oxlint. Native builds require the Windows MSVC toolchain or Linux PipeWire development files.
 
 ## Contributing
 
-Contributions are welcome. Native capture changes must be tested on Windows with the MSVC Rust toolchain.
+Contributions are welcome. Native capture changes must be tested on the affected platform with the Rust toolchain and native development libraries.
 
 ### Development setup
 
@@ -612,9 +639,9 @@ cargo fmt --all -- --check
 - Keep changes focused and update the README when public APIs change.
 - Add or update Vitest coverage for observable JavaScript behavior.
 - Keep generated NAPI artifacts synchronized with native API changes.
-- Run the relevant Windows capture checks for platform-specific changes.
+- Run the relevant Windows or Wayland capture checks for platform-specific changes.
 - Include a concise description of the behavior changed and the verification performed.
 
 ## License
 
-This software is released under the [MIT License](LICENCE).
+This software is released under the [MIT License](LICENSE).
