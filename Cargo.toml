@@ -1,11 +1,12 @@
 
 [package]
 edition = "2024"
-name = "native_capture_node"
+name = "native_capture_core"
 version = "1.0.0"
 
 [lib]
 crate-type = ["cdylib"]
+path = "lib/lib.rs"
 
 [dependencies]
 napi = { version = "3.0.0", features = ["async"] }
@@ -19,6 +20,21 @@ windows = { version = "0.62.2", features = [
   "Win32_System_Threading",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.13.12", default-features = false, features = [
+  "screencast",
+  "tokio",
+] }
+image = { version = "0.25.10", default-features = false, features = [
+  "bmp",
+  "gif",
+  "jpeg",
+  "png",
+  "tiff",
+] }
+pipewire = "0.10.0"
+tokio = { version = "1.51", features = ["rt", "time"] }
 
 [build-dependencies]
 napi-build = "2"
