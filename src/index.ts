@@ -1,4 +1,4 @@
-import type * as Native from "../index.js";
+import type * as Native from "../index.d.ts";
 import { LatestFrameQueue } from "./frame-queue.js";
 import * as addon from "../index.js";
 
