@@ -3,7 +3,7 @@ import { defineConfig } from "tsdown";
 export default defineConfig([
 	{
 		entry: "src/index.ts",
-		name: "windows-capture",
+		deps: { neverBundle: ["../index.js"] },
 		shims: true,
 		sourcemap: true,
 	},

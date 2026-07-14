@@ -9,9 +9,10 @@
 		"skipLibCheck": true,
 		"declaration": true,
 		"sourceMap": false,
+		"allowJs": true,
 		"outDir": "./dist",
 		"rootDir": ".",
 		"types": ["node"]
 	},
-	"include": ["src/**/*.ts"]
+	"include": ["src/**/*.ts", "index.js"]
 }
