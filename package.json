@@ -1,7 +1,7 @@
 {
-	"name": "@native-capture/windows",
+	"name": "@native-capture/core",
 	"version": "1.0.0",
-	"description": "High-performance Node.js bindings for the Windows Graphics Capture and DXGI Desktop Duplication APIs",
+	"description": "Cross-platform native screen capture for Node.js on Windows and Linux/Wayland",
 	"homepage": "https://github.com/tux-tn/node-native-capture#readme",
 	"author": "Sarhan Aissi <npm@tux.tn>",
 	"main": "./dist/index.mjs",
@@ -19,9 +19,11 @@
 	},
 	"license": "MIT",
 	"keywords": [
-		"windows",
 		"screen-capture",
 		"screenshot",
+		"wayland",
+		"pipewire",
+		"windows",
 		"desktop-duplication",
 		"dxgi",
 		"graphics-capture",
@@ -35,11 +37,14 @@
 		"README.md"
 	],
 	"napi": {
-		"packageName": "@native-capture/windows",
+		"binaryName": "native-capture",
+		"packageName": "@native-capture/core",
 		"targets": [
 			"x86_64-pc-windows-msvc",
 			"i686-pc-windows-msvc",
-			"aarch64-pc-windows-msvc"
+			"aarch64-pc-windows-msvc",
+			"x86_64-unknown-linux-gnu",
+			"aarch64-unknown-linux-gnu"
 		]
 	},
 	"engines": {
@@ -52,7 +57,7 @@
 	"scripts": {
 		"artifacts": "napi artifacts",
 		"build": "tsdown",
-		"build:addon": "napi build --platform --release",
+		"build:addon": "napi build --platform --release --esm",
 		"build:addon:debug": "napi build --platform",
 		"format": "oxfmt --check",
 		"format:fix": "oxfmt",
@@ -60,8 +65,11 @@
 		"format:toml": "taplo format",
 		"lint": "oxlint",
 		"lint:fix": "oxlint --fix",
-		"prepublishOnly": "pnpm build && napi prepublish -t npm",
-		"test": "vitest run",
+		"prepublishOnly": "pnpm build && napi prepublish -t npm && pnpm format:fix",
+		"test": "vitest run test/unit",
+		"test:coverage": "vitest run --coverage",
+		"test:capture": "node scripts/capture-smoke.js",
+		"test:e2e": "vitest run test/integration",
 		"test:watch": "vitest",
 		"version": "napi version"
 	},
@@ -69,6 +77,7 @@
 		"@napi-rs/cli": "^3.7.3",
 		"@taplo/cli": "^0.7.0",
 		"@types/node": "^26.1.1",
+		"@vitest/coverage-v8": "^4.1.10",
 		"oxfmt": "0.58.0",
 		"oxlint": "^1.73.0",
 		"oxlint-tsgolint": "^0.24.0",
@@ -76,5 +85,6 @@
 		"typescript": "^7.0.2",
 		"vitest": "^4.1.10"
 	},
+	"type": "module",
 	"packageManager": "pnpm@11.11.0"
 }

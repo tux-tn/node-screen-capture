@@ -1,10 +1,6 @@
-import { createRequire } from "node:module";
-
 import type * as Native from "../index.js";
 import { LatestFrameQueue } from "./frame-queue.js";
-
-const require = createRequire(import.meta.url);
-const addon = require("../index.js") as typeof Native;
+import * as addon from "../index.js";
 
 export const {
 	AudioCodec,
@@ -30,9 +26,9 @@ export const {
 	windowFromName,
 } = addon;
 
-const NativeWindowsCapture = addon.WindowsCapture;
+const NativeScreenCapture = addon.ScreenCapture;
 
-export class WindowsCapture implements AsyncIterable<Native.Frame> {
+export class ScreenCapture implements AsyncIterable<Native.Frame> {
 	readonly #options: Native.CaptureOptions;
 	#control: Native.CaptureControl | undefined;
 	readonly #frames = new LatestFrameQueue<Native.Frame>();
@@ -47,7 +43,7 @@ export class WindowsCapture implements AsyncIterable<Native.Frame> {
 		}
 		this.#frames.open();
 		try {
-			const capture = new NativeWindowsCapture(
+			const capture = new NativeScreenCapture(
 				this.#options,
 				(frame: Native.Frame) => this.#frames.push(frame),
 				() => this.#frames.close(),

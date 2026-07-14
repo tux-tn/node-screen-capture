@@ -28,12 +28,17 @@ export declare class Frame {
   get dirtyRegions(): Array<DirtyRegion>
   crop(startX: number, startY: number, endX: number, endY: number): Frame
   encode(format: ImageFormat): Buffer
-  saveAsImage(path: string, format: ImageFormat): void
+  saveAsImage(path: string, format?: ImageFormat | undefined | null): void
 }
 
 export declare class ImageEncoder {
   constructor(format: ImageFormat, pixelFormat: ImageEncoderPixelFormat)
   encode(buffer: Buffer, width: number, height: number): Buffer
+}
+
+export declare class ScreenCapture {
+  constructor(options: CaptureOptions, onFrameArrived: (frame: Frame) => void, onClosed?: (() => void) | undefined | null)
+  start(): CaptureControl
 }
 
 export declare class VideoEncoder {
@@ -43,11 +48,6 @@ export declare class VideoEncoder {
   sendFrameBuffer(buffer: Buffer, timestamp: number): void
   sendAudioBuffer(buffer: Buffer, timestamp?: number | undefined | null): void
   finish(): Buffer | null
-}
-
-export declare class WindowsCapture {
-  constructor(options: CaptureOptions, onFrameArrived: FrameCallback, onClosed?: ClosedCallback | undefined | null)
-  start(): CaptureControl
 }
 
 export declare const enum AudioCodec {
