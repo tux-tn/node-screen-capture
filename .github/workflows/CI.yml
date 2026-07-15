@@ -193,7 +193,7 @@ jobs:
           package-manager-cache: false
           registry-url: https://registry.npmjs.org
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --no-frozen-lockfile
       - name: Download all artifacts
         uses: actions/download-artifact@v8
         with:

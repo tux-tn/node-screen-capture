@@ -67,7 +67,7 @@
 		"format:toml": "taplo format",
 		"lint": "oxlint",
 		"lint:fix": "oxlint --fix",
-		"prepublishOnly": "pnpm build && napi prepublish -t npm && pnpm format:fix",
+		"prepublishOnly": "pnpm build && napi prepublish --skip-optional-publish -t npm",
 		"test": "vitest run test/unit",
 		"test:coverage": "vitest run --coverage",
 		"test:capture": "node scripts/capture-smoke.js",
