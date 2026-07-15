@@ -51,9 +51,6 @@ features = ["macros", "rt", "time"]
 version = "8.0.0"
 features = ["macos_14_0"]
 
-[target."cfg(target_os = \"macos\")".dependencies.apple-metal]
-version = "=0.8.7"
-
 [target."cfg(target_os = \"macos\")".dependencies.image]
 version = "0.25.10"
 default-features = false
