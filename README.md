@@ -1,6 +1,6 @@
 # @screen-capture/node
 
-Cross-platform native screen capture for Node.js. Windows uses [`windows-capture` 2.0.0](https://github.com/NiiightmareXD/windows-capture); Linux/Wayland uses the XDG ScreenCast portal and PipeWire.
+Cross-platform native screen capture for Node.js. Windows uses [`windows-capture` 2.0.0](https://github.com/NiiightmareXD/windows-capture), macOS uses [`screencapturekit` 8](https://crates.io/crates/screencapturekit), and Linux/Wayland uses the XDG ScreenCast portal and PipeWire.
 
 ## Table of contents
 
@@ -13,7 +13,7 @@ Cross-platform native screen capture for Node.js. Windows uses [`windows-capture
   - [Capture targets and options](#capture-targets-and-options)
   - [Capability checks](#capability-checks)
 - [Frames](#frames)
-- [Monitor and window discovery (Windows only)](#monitor-and-window-discovery-windows-only)
+- [Monitor and window discovery](#monitor-and-window-discovery)
   - [Monitor functions](#monitor-functions)
   - [Window functions](#window-functions)
 - [DXGI Desktop Duplication](#dxgi-desktop-duplication)
@@ -29,27 +29,29 @@ Cross-platform native screen capture for Node.js. Windows uses [`windows-capture
 ## Requirements
 
 - Node.js 20.17+, 22.13+, or 23.5+
-- Windows 10 version 1903 or newer with the MSVC runtime, or
+- Windows 10 version 1903 or newer with the MSVC runtime,
+- macOS 12.3 or newer with Screen Recording permission; the native picker requires macOS 14 or newer, or
 - Linux with Wayland, PipeWire 0.3, and a working `xdg-desktop-portal` ScreenCast backend
 
-Check `isSupported()` and `captureApiSupport()` before starting capture. Wayland always delegates source selection to the desktop portal.
+Check `isSupported()` and `captureApiSupport()` before starting capture. macOS requires Screen Recording permission in System Settings. Wayland always delegates source selection to the desktop portal.
 
 ## Platform support
 
-| Capability | Windows | Linux/Wayland |
-| --- | --- | --- |
-| Screen or window capture | Yes | Yes, through the XDG ScreenCast portal |
-| Promise and async-iterator frame API | Yes | Yes |
-| Cursor capture | Yes | Yes, when the portal supports it |
-| Monitor and window discovery | Yes | No; Wayland intentionally does not expose global source enumeration |
-| Target selection by index, title, or native handle | Yes | No; the portal owns source selection |
-| Frame crop and packed RGBA/BGRA buffers | Yes | Yes |
-| JPEG, PNG, GIF, TIFF, and BMP encoding | Yes | Yes |
-| JPEG XR and RGB16F image encoding | Yes | No |
-| DXGI Desktop Duplication | Yes | No |
-| Video encoding | Yes | No |
+| Capability | Windows | macOS | Linux/Wayland |
+| --- | --- | --- | --- |
+| Screen or window capture | Yes | Yes, through ScreenCaptureKit | Yes, through the XDG ScreenCast portal |
+| Promise and async-iterator frame API | Yes | Yes | Yes |
+| Cursor capture | Yes | Yes | Yes, when the portal supports it |
+| Native content picker | Yes | Yes, on macOS 14+ | Yes, through the portal |
+| Monitor and window discovery | Yes | Yes | No; Wayland intentionally does not expose global source enumeration |
+| Target selection by index, title, or native handle | Yes | Yes | No; the portal owns source selection |
+| Frame crop and packed RGBA/BGRA buffers | Yes | Yes | Yes |
+| JPEG, PNG, GIF, TIFF, and BMP encoding | Yes | Yes | Yes |
+| JPEG XR and RGB16F image encoding | Yes | No | No |
+| DXGI Desktop Duplication | Yes | No | No |
+| Video encoding | Yes | No | No |
 
-The public TypeScript surface is shared across both backends. `ScreenCapture` is the platform-neutral capture class. Unsupported platform-specific methods throw an explicit error instead of silently changing behavior.
+The public TypeScript surface is shared across all three backends. `ScreenCapture` is the platform-neutral capture class. Unsupported platform-specific methods throw an explicit error instead of silently changing behavior.
 
 On Wayland, every new capture session opens the desktop portal. The user chooses the actual monitor or window; applications cannot bypass that consent dialog or enumerate sources ahead of time.
 
@@ -73,10 +75,11 @@ import {
   ScreenCapture,
 } from '@screen-capture/node'
 
-const capture = new ScreenCapture({
-  monitorIndex: 1,
-  colorFormat: 'bgra8',
-})
+const capture = new ScreenCapture(
+  process.platform === 'win32' || process.platform === 'darwin'
+    ? { monitorIndex: 1, colorFormat: 'bgra8' }
+    : { usePicker: true, colorFormat: 'bgra8' },
+)
 
 await capture.start()
 const frame = await capture.nextFrame()
@@ -93,7 +96,7 @@ if (frame) {
 await capture.stop()
 ```
 
-`monitorIndex` is one-based on Windows. On Wayland, the same call requests a monitor and the portal asks the user which monitor to share.
+`monitorIndex` is one-based on Windows and macOS. On Wayland, omit direct target selectors; the portal asks the user which monitor or window to share.
 
 ## Screen capture
 
@@ -128,7 +131,7 @@ for await (const frame of capture) {
 
 ### Capture targets and options
 
-Exactly one target may be selected. If all target fields are omitted, Windows captures monitor 1 and Wayland requests a monitor through the portal.
+Exactly one target may be selected on Windows and macOS. If all target fields are omitted, Windows and macOS capture monitor 1; Wayland opens the portal and lets the user choose a source.
 
 ```ts
 interface CaptureOptions {
@@ -147,16 +150,16 @@ interface CaptureOptions {
 
 | Option | Description |
 | --- | --- |
-| `monitorIndex` | Windows: one-based monitor index. Wayland: requests a monitor; the numeric index cannot select it. |
-| `windowName` | Windows: captures the first top-level window whose title contains this string. Wayland: requests a window; the title cannot select it. |
-| `windowHandle` | Windows: captures a native `HWND`. Wayland: requests a window; the handle cannot select it. |
-| `usePicker` | Opens the native Windows picker or allows monitor/window selection in the Wayland portal. |
+| `monitorIndex` | Windows and macOS: one-based monitor index. Wayland: unsupported as a direct selector; omit it and let the portal choose. |
+| `windowName` | Windows and macOS: captures the first top-level window whose title contains this string. Wayland: unsupported; use the portal picker. |
+| `windowHandle` | Windows: native `HWND`. macOS: ScreenCaptureKit window ID. Wayland: unsupported; use the portal picker. |
+| `usePicker` | Opens the native Windows or macOS picker, or allows monitor/window selection in the Wayland portal. The macOS picker requires macOS 14+. |
 | `cursorCapture` | Includes or excludes the cursor when supported. |
 | `drawBorder` | Windows-only capture-border control. |
 | `includeSecondaryWindows` | Windows-only secondary-window control. |
 | `minimumUpdateIntervalMs` | Windows-only minimum interval between updates. |
 | `dirtyRegions` | Windows-only dirty-region reporting and rendering control. |
-| `colorFormat` | Requested frame format. Defaults to `ColorFormat.Bgra8`; Wayland supports `rgba8` and `bgra8`. |
+| `colorFormat` | Requested frame format. Defaults to `ColorFormat.Bgra8`; macOS and Wayland support `rgba8` and `bgra8`. |
 
 Examples of each target:
 
@@ -226,8 +229,8 @@ interface DirtyRegion {
 - `buffer` contains packed pixel bytes with GPU row padding removed.
 - `rowPitch` is the packed byte count per row.
 - `depthPitch` is the packed byte count for the entire frame.
-- `timestamp` uses 100-nanosecond ticks. Windows uses the platform capture clock; Wayland timestamps are relative to the current capture session.
-- `dirtyRegions` contains changed rectangles on Windows when reporting is enabled. Wayland currently returns an empty array.
+- `timestamp` uses 100-nanosecond ticks. Windows uses the platform capture clock; macOS and Wayland timestamps are relative to the current capture session.
+- `dirtyRegions` contains changed rectangles on Windows when reporting is enabled. macOS and Wayland currently return an empty array.
 - `crop()` uses an exclusive end coordinate. Invalid rectangles throw.
 - `encode()` and `saveAsImage()` support `rgba8` and `bgra8`. `rgba16F` frames must be converted before image encoding.
 - `saveAsImage()` defaults to PNG when `format` is omitted.
@@ -252,7 +255,7 @@ if (frame) {
 await capture.stop()
 ```
 
-## Monitor and window discovery (Windows only)
+## Monitor and window discovery
 
 ### Monitor functions
 
@@ -273,7 +276,7 @@ interface MonitorInfo {
 }
 ```
 
-These functions are Windows-only. `index` is one-based and `handle` is the native `HMONITOR` represented as a JavaScript number. Wayland callers receive an explicit unsupported error because source enumeration is not available through the ScreenCast portal.
+These functions are available on Windows and macOS. `index` is one-based. Windows monitor handles are native `HMONITOR` values; macOS handles are ScreenCaptureKit display IDs. Wayland callers receive an explicit unsupported error because source enumeration is not available through the ScreenCast portal.
 
 ### Window functions
 
@@ -329,7 +332,7 @@ console.log(windowFromHandle(hwnd))
 
 ## DXGI Desktop Duplication
 
-DXGI Desktop Duplication is a Windows-only synchronous API. On Wayland, use `ScreenCapture`, which receives frames asynchronously from PipeWire after portal selection.
+DXGI Desktop Duplication is a Windows-only synchronous API. On macOS or Wayland, use the asynchronous `ScreenCapture` API.
 
 ```ts
 class DxgiDuplicationSession {
@@ -351,6 +354,7 @@ interface DxgiSessionOptions {
 
 - `monitorIndex` defaults to monitor 1.
 - `supportedFormats` is optional. If omitted, the native crate negotiates a supported format.
+- `Rgb10A2` and `Rgb10XrA2` sessions are converted to packed `rgba8` frames before crossing into JavaScript.
 - `acquireNextFrame()` returns `null` when no desktop update arrives before the timeout. The default timeout is 16 ms.
 - `recreate()` rebuilds the session after display-mode changes or DXGI access loss.
 - `switchMonitor()` recreates the session on another one-based monitor index.
@@ -409,13 +413,13 @@ const encoder = new ImageEncoder(
 const png = encoder.encode(rawBgraBuffer, width, height)
 ```
 
-JPEG XR and RGB16F image encoding are Windows-only. The Wayland backend supports JPEG, PNG, GIF, TIFF, and BMP from packed `rgba8` or `bgra8` pixels.
+JPEG XR and RGB16F image encoding are Windows-only. The macOS and Wayland backends support JPEG, PNG, GIF, TIFF, and BMP from packed `rgba8` or `bgra8` pixels.
 
 ## Video encoding (Windows only)
 
 ### `VideoEncoder`
 
-`VideoEncoder` uses Windows Media Foundation. Constructing it on Wayland throws an explicit unsupported error.
+`VideoEncoder` uses Windows Media Foundation. Constructing it on macOS or Wayland throws an explicit unsupported error.
 
 ```ts
 class VideoEncoder {
@@ -498,7 +502,7 @@ if (firstFrame) {
 }
 ```
 
-Raw `sendFrameBuffer()` input must be packed BGRA with the layout expected by the underlying Windows Media Foundation encoder. The Rust crate documents that raw buffers use bottom-to-top row order. `sendFrame(frame)` in this binding extracts the Node frame buffer and uses the same raw-buffer path; use the PNG path above when validating frame orientation.
+`sendFrame(frame)` validates the configured dimensions, converts `rgba8` or `bgra8` input to BGRA, and reverses the rows for the Windows Media Foundation encoder. Raw `sendFrameBuffer()` input must already be packed BGRA in bottom-to-top row order and must match the configured dimensions.
 
 In-memory output:
 
@@ -596,6 +600,8 @@ On Windows, the binding follows the application-facing portions of [`windows-cap
 | `VideoEncoder` | `VideoEncoder`, audio settings, codecs, and containers |
 | Graphics Capture feature probes | `isSupported()` and `captureApiSupport()` |
 
+On macOS, [`screencapturekit` 8](https://docs.rs/screencapturekit/8.0.0/screencapturekit/) supplies display/window discovery, ScreenCaptureKit streams, the macOS 14+ content picker, BGRA pixel buffers, and Screen Recording permission checks. Frames are copied into packed Node.js buffers before crossing the native callback boundary.
+
 On Linux, `ScreenCapture` implements the same promise and async-iterator lifecycle with the XDG ScreenCast portal and PipeWire. The portal's security model prevents parity for source discovery and direct source selection; DXGI and Windows Media Foundation APIs remain Windows-only.
 
 Raw COM interfaces, D3D11 devices, textures, and surfaces are intentionally not exposed to JavaScript. Frames are represented as owned Node.js buffers so their lifetime is safe across the promise and async-iterator boundaries.
@@ -609,37 +615,24 @@ pnpm build
 pnpm lint
 pnpm format
 pnpm test
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
 ```
 
-Rust formatting uses `cargo fmt`; TypeScript and JavaScript formatting use Oxfmt; linting uses Oxlint. Native builds require the Windows MSVC toolchain or Linux PipeWire development files.
+Rust formatting uses `cargo fmt`; TypeScript and JavaScript formatting use Oxfmt; linting uses Oxlint. Native builds require the Windows MSVC toolchain, Xcode with a macOS 14+ SDK, or Linux PipeWire development files.
+
+Run `pnpm test:e2e` separately on an interactive desktop. It opens the native source picker on macOS and Wayland and may show a capture-permission prompt.
 
 ## Contributing
 
-Contributions are welcome. Native capture changes must be tested on the affected platform with the Rust toolchain and native development libraries.
-
-### Development setup
-
-```bash
-pnpm install
-```
-
-Run the checks used by the project before opening a pull request:
-
-```bash
-pnpm build
-pnpm lint
-pnpm format
-pnpm test
-cargo fmt --all -- --check
-```
-
+Contributions are welcome. Before opening a pull request, run the development checks above and test native capture on every affected platform with the required native toolchain and libraries.
 
 ### Pull requests
 
 - Keep changes focused and update the README when public APIs change.
 - Add or update Vitest coverage for observable JavaScript behavior.
 - Keep generated NAPI artifacts synchronized with native API changes.
-- Run the relevant Windows or Wayland capture checks for platform-specific changes.
+- Run the relevant Windows, macOS, or Wayland capture checks for platform-specific changes.
 - Include a concise description of the behavior changed and the verification performed.
 
 ## License

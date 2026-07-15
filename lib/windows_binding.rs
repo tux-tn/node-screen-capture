@@ -11,8 +11,11 @@ use napi::threadsafe_function::{
 use napi_derive::napi;
 use windows::Storage::Streams::{DataReader, InMemoryRandomAccessStream};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
+use windows::Win32::System::Performance::QueryPerformanceFrequency;
 use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
+use windows::Win32::UI::WindowsAndMessaging::{
+  MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, WM_QUIT,
+};
 use windows::core::Interface;
 use windows_capture_rs::capture::{
   CaptureControl as RustCaptureControl, Context, GraphicsCaptureApiHandler,
@@ -388,7 +391,9 @@ impl PickerCaptureControl {
   }
 
   fn stop(mut self) -> std::result::Result<(), String> {
-    if !self.is_finished() {
+    let post_result = if self.is_finished() {
+      Ok(())
+    } else {
       unsafe {
         PostThreadMessageW(
           self.thread_id,
@@ -397,9 +402,10 @@ impl PickerCaptureControl {
           LPARAM::default(),
         )
       }
-      .map_err(|error| error.to_string())?;
-    }
-    self.join()
+      .map_err(|error| error.to_string())
+    };
+    let join_result = self.join();
+    post_result.and(join_result)
   }
 
   fn wait(mut self) -> std::result::Result<(), String> {
@@ -428,6 +434,10 @@ fn start_picker_capture(
 ) -> Result<NativeCaptureControl> {
   let (thread_id_sender, thread_id_receiver) = mpsc::sync_channel(1);
   let thread_handle = thread::spawn(move || {
+    let mut message = MSG::default();
+    unsafe {
+      PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
+    }
     let thread_id = unsafe { GetCurrentThreadId() };
     thread_id_sender
       .send(thread_id)
@@ -781,6 +791,39 @@ impl From<RustDxgiFormat> for DxgiDuplicationFormat {
   }
 }
 
+fn convert_rgb10a2(buffer: &[u8], xr_bias: bool) -> Vec<u8> {
+  let mut converted = Vec::with_capacity(buffer.len());
+  for pixel in buffer.chunks_exact(4) {
+    let packed = u32::from_le_bytes([pixel[0], pixel[1], pixel[2], pixel[3]]);
+    let red = packed & 0x3ff;
+    let green = (packed >> 10) & 0x3ff;
+    let blue = (packed >> 20) & 0x3ff;
+    let alpha = (packed >> 30) & 0x03;
+    let channel = |value: u32| {
+      let normalized = if xr_bias {
+        (value as f32 - 384.0) / 510.0
+      } else {
+        value as f32 / 1023.0
+      };
+      (normalized.clamp(0.0, 1.0) * 255.0).round() as u8
+    };
+    converted.extend_from_slice(&[
+      channel(red),
+      channel(green),
+      channel(blue),
+      ((alpha * 255 + 1) / 3) as u8,
+    ]);
+  }
+  converted
+}
+
+fn qpc_timestamp_100ns(value: i64, frequency: i64) -> i64 {
+  if value <= 0 || frequency <= 0 {
+    return 0;
+  }
+  (i128::from(value) * 10_000_000 / i128::from(frequency)).min(i128::from(i64::MAX)) as i64
+}
+
 #[napi(object)]
 pub struct DxgiSessionOptions {
   pub monitor_index: Option<u32>,
@@ -792,6 +835,7 @@ pub struct DxgiDuplicationSession {
   inner: Option<DxgiDuplicationApi>,
   monitor: RustMonitor,
   formats: Vec<RustDxgiFormat>,
+  qpc_frequency: i64,
 }
 
 #[napi]
@@ -810,6 +854,8 @@ impl DxgiDuplicationSession {
       .into_iter()
       .map(Into::into)
       .collect();
+    let mut qpc_frequency = 0;
+    unsafe { QueryPerformanceFrequency(&mut qpc_frequency) }.map_err(error)?;
     let inner = if formats.is_empty() {
       DxgiDuplicationApi::new(monitor).map_err(error)?
     } else {
@@ -819,6 +865,7 @@ impl DxgiDuplicationSession {
       inner: Some(inner),
       monitor,
       formats,
+      qpc_frequency,
     })
   }
 
@@ -833,23 +880,22 @@ impl DxgiDuplicationSession {
   }
 
   #[napi(getter)]
-  pub fn format(&self) -> DxgiDuplicationFormat {
+  pub fn format(&self) -> Result<DxgiDuplicationFormat> {
     self
       .inner
       .as_ref()
-      .expect("active DXGI session")
-      .format()
-      .into()
+      .map(|inner| inner.format().into())
+      .ok_or_else(|| error("DXGI session is not active"))
   }
 
   #[napi(getter)]
-  pub fn refresh_rate(&self) -> Vec<u32> {
+  pub fn refresh_rate(&self) -> Result<Vec<u32>> {
     let (numerator, denominator) = self
       .inner
       .as_ref()
-      .expect("active DXGI session")
+      .ok_or_else(|| error("DXGI session is not active"))?
       .refresh_rate();
-    vec![numerator, denominator]
+    Ok(vec![numerator, denominator])
   }
 
   #[napi]
@@ -865,15 +911,18 @@ impl DxgiDuplicationSession {
     };
     let width = frame.width();
     let height = frame.height();
-    let color_format = match frame.format() {
-      RustDxgiFormat::Rgba16F => ColorFormat::Rgba16F,
-      RustDxgiFormat::Rgb10A2 | RustDxgiFormat::Rgb10XrA2 => ColorFormat::Rgba8,
-      RustDxgiFormat::Rgba8 | RustDxgiFormat::Rgba8Srgb => ColorFormat::Rgba8,
-      RustDxgiFormat::Bgra8 | RustDxgiFormat::Bgra8Srgb => ColorFormat::Bgra8,
-    };
+    let native_format = frame.format();
+    let timestamp = qpc_timestamp_100ns(frame.frame_info().LastPresentTime, self.qpc_frequency);
     let buffer = frame.buffer().map_err(error)?;
     let mut scratch = Vec::new();
-    let bytes = buffer.as_nopadding_buffer(&mut scratch).to_vec();
+    let packed = buffer.as_nopadding_buffer(&mut scratch);
+    let (bytes, color_format) = match native_format {
+      RustDxgiFormat::Rgba16F => (packed.to_vec(), ColorFormat::Rgba16F),
+      RustDxgiFormat::Rgb10A2 => (convert_rgb10a2(packed, false), ColorFormat::Rgba8),
+      RustDxgiFormat::Rgb10XrA2 => (convert_rgb10a2(packed, true), ColorFormat::Rgba8),
+      RustDxgiFormat::Rgba8 | RustDxgiFormat::Rgba8Srgb => (packed.to_vec(), ColorFormat::Rgba8),
+      RustDxgiFormat::Bgra8 | RustDxgiFormat::Bgra8Srgb => (packed.to_vec(), ColorFormat::Bgra8),
+    };
     let row_pitch = width * bytes_per_pixel(matches!(color_format, ColorFormat::Rgba16F));
     Ok(Some(Frame {
       buffer: bytes,
@@ -881,7 +930,7 @@ impl DxgiDuplicationSession {
       height,
       row_pitch,
       depth_pitch: row_pitch * height,
-      timestamp: 0,
+      timestamp,
       color_format,
       dirty_regions: Vec::new(),
     }))
@@ -889,15 +938,18 @@ impl DxgiDuplicationSession {
 
   #[napi]
   pub fn recreate(&mut self) -> Result<()> {
-    let current = self
-      .inner
-      .take()
-      .ok_or_else(|| error("DXGI session is not active"))?;
-    self.inner = Some(if self.formats.is_empty() {
-      current.recreate().map_err(error)?
+    let recreated = if let Some(current) = self.inner.take() {
+      if self.formats.is_empty() {
+        current.recreate()
+      } else {
+        current.recreate_options(&self.formats)
+      }
+    } else if self.formats.is_empty() {
+      DxgiDuplicationApi::new(self.monitor)
     } else {
-      current.recreate_options(&self.formats).map_err(error)?
-    });
+      DxgiDuplicationApi::new_options(self.monitor, &self.formats)
+    };
+    self.inner = Some(recreated.map_err(error)?);
     Ok(())
   }
 
@@ -1139,12 +1191,16 @@ enum VideoEncoderOutput {
 pub struct VideoEncoder {
   inner: Option<RustVideoEncoder>,
   output: VideoEncoderOutput,
+  width: u32,
+  height: u32,
 }
 
 #[napi]
 impl VideoEncoder {
   #[napi(constructor)]
   pub fn new(options: VideoEncoderOptions) -> Result<Self> {
+    let width = options.video.width;
+    let height = options.video.height;
     let mut video = VideoSettingsBuilder::new(options.video.width, options.video.height);
     if let Some(codec) = options.video.codec {
       video = video.sub_type(codec.into());
@@ -1212,12 +1268,63 @@ impl VideoEncoder {
     Ok(Self {
       inner: Some(inner),
       output,
+      width,
+      height,
     })
+  }
+
+  fn expected_buffer_len(&self) -> Result<usize> {
+    usize::try_from(self.width)
+      .ok()
+      .and_then(|width| width.checked_mul(4))
+      .and_then(|row_bytes| {
+        usize::try_from(self.height)
+          .ok()
+          .and_then(|height| row_bytes.checked_mul(height))
+      })
+      .ok_or_else(|| error("Video dimensions exceed the supported buffer size"))
   }
 
   #[napi]
   pub fn send_frame(&mut self, frame: &Frame) -> Result<()> {
-    self.send_frame_buffer(frame.buffer(), frame.timestamp)
+    let expected = self.expected_buffer_len()?;
+    if frame.width != self.width || frame.height != self.height {
+      return Err(error(format!(
+        "Frame dimensions are {}x{}; encoder expects {}x{}",
+        frame.width, frame.height, self.width, self.height
+      )));
+    }
+    if frame.buffer.len() != expected {
+      return Err(error(format!(
+        "Frame buffer has {} bytes; expected {expected}",
+        frame.buffer.len()
+      )));
+    }
+    if matches!(frame.color_format, ColorFormat::Rgba16F) {
+      return Err(error("Video encoding does not accept Rgba16F frames"));
+    }
+
+    let row_bytes = self.width as usize * 4;
+    let mut bottom_up_bgra = vec![0_u8; expected];
+    for output_y in 0..self.height as usize {
+      let source_y = self.height as usize - output_y - 1;
+      let source = &frame.buffer[source_y * row_bytes..(source_y + 1) * row_bytes];
+      let destination = &mut bottom_up_bgra[output_y * row_bytes..(output_y + 1) * row_bytes];
+      if matches!(frame.color_format, ColorFormat::Bgra8) {
+        destination.copy_from_slice(source);
+      } else {
+        for (source, destination) in source.chunks_exact(4).zip(destination.chunks_exact_mut(4)) {
+          destination.copy_from_slice(&[source[2], source[1], source[0], source[3]]);
+        }
+      }
+    }
+
+    self
+      .inner
+      .as_mut()
+      .ok_or_else(|| error("Video encoder is already finished"))?
+      .send_frame_buffer(&bottom_up_bgra, frame.timestamp)
+      .map_err(error)
   }
 
   #[napi]
@@ -1228,6 +1335,13 @@ impl VideoEncoder {
 
   #[napi]
   pub fn send_frame_buffer(&mut self, buffer: Buffer, timestamp: i64) -> Result<()> {
+    let expected = self.expected_buffer_len()?;
+    if buffer.len() != expected {
+      return Err(error(format!(
+        "Video frame buffer has {} bytes; expected {expected}",
+        buffer.len()
+      )));
+    }
     self
       .inner
       .as_mut()

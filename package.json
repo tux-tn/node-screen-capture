@@ -1,7 +1,7 @@
 {
 	"name": "@screen-capture/node",
 	"version": "1.0.0",
-	"description": "Cross-platform native screen capture for Node.js on Windows and Linux/Wayland",
+	"description": "Cross-platform native screen capture for Node.js on Windows, macOS, and Linux/Wayland",
 	"homepage": "https://github.com/tux-tn/node-screen-capture#readme",
 	"author": "Sarhan Aissi <npm@tux.tn>",
 	"main": "./dist/index.mjs",
@@ -23,6 +23,7 @@
 		"screenshot",
 		"wayland",
 		"pipewire",
+		"macos",
 		"windows",
 		"desktop-duplication",
 		"dxgi",
@@ -45,7 +46,9 @@
 			"i686-pc-windows-msvc",
 			"aarch64-pc-windows-msvc",
 			"x86_64-unknown-linux-gnu",
-			"aarch64-unknown-linux-gnu"
+			"aarch64-unknown-linux-gnu",
+			"x86_64-apple-darwin",
+			"aarch64-apple-darwin"
 		]
 	},
 	"engines": {
@@ -67,7 +70,7 @@
 		"format:toml": "taplo format",
 		"lint": "oxlint",
 		"lint:fix": "oxlint --fix",
-		"prepublishOnly": "pnpm build && napi prepublish --skip-optional-publish -t npm",
+		"prepublishOnly": "pnpm build && napi prepublish -t npm",
 		"test": "vitest run test/unit",
 		"test:coverage": "vitest run --coverage",
 		"test:capture": "node scripts/capture-smoke.js",

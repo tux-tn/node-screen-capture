@@ -6,8 +6,8 @@ if (!isSupported()) {
 	throw new Error("Native screen capture is unavailable in this session");
 }
 
-const isWindows = process.platform === "win32";
-if (isWindows) {
+const canEnumerateSources = process.platform === "win32" || process.platform === "darwin";
+if (canEnumerateSources) {
 	const monitors = enumerateMonitors();
 	console.log(`Active screens: ${monitors.length}`);
 	console.table(monitors);
@@ -17,7 +17,7 @@ if (isWindows) {
 }
 
 const capture = new ScreenCapture({
-	...(isWindows ? { monitorIndex: 1 } : { usePicker: true }),
+	...(process.platform === "win32" ? { monitorIndex: 1 } : { usePicker: true }),
 	colorFormat: ColorFormat.Bgra8,
 });
 const configuredFrameLimit = Number.parseInt(process.env.CAPTURE_MAX_FRAMES ?? "", 10);
@@ -43,6 +43,7 @@ let totalFrames = 0;
 let intervalFrames = 0;
 let intervalWaitMs = 0;
 let intervalStartedAt = performance.now();
+await mkdir("tmp", { recursive: true });
 
 try {
 	while (!stopping && totalFrames < frameLimit) {
@@ -50,7 +51,6 @@ try {
 		const frame = await capture.nextFrame();
 		const waitMs = performance.now() - waitStartedAt;
 		if (!frame) break;
-		await mkdir("tmp", { recursive: true });
 		frame.saveAsImage(`tmp/frame-${totalFrames}.png`);
 		totalFrames += 1;
 		intervalFrames += 1;

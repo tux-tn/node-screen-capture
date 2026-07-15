@@ -1,5 +1,7 @@
+use std::cell::RefCell;
 use std::io::Cursor;
 use std::os::fd::OwnedFd;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -269,6 +271,12 @@ impl WaylandCaptureControl {
   }
 }
 
+impl Drop for WaylandCaptureControl {
+  fn drop(&mut self) {
+    self.stop.store(true, Ordering::Release);
+  }
+}
+
 enum CaptureControlAction {
   Stop,
   Wait,
@@ -360,6 +368,14 @@ impl ScreenCapture {
         "Specify only one of monitorIndex, windowName, windowHandle, or usePicker",
       ));
     }
+    if options.monitor_index.is_some()
+      || options.window_name.is_some()
+      || options.window_handle.is_some()
+    {
+      return Err(error(
+        "Wayland source selectors are unavailable; use usePicker or omit target selectors",
+      ));
+    }
     if matches!(options.color_format, Some(ColorFormat::Rgba16F)) {
       return Err(error(
         "Rgba16F capture is not supported by the Wayland backend",
@@ -417,23 +433,53 @@ async fn open_portal(
   let proxy = Screencast::with_connection(connection)
     .await
     .map_err(|error| error.to_string())?;
-  let session = proxy
-    .create_session(CreateSessionOptions::default())
+  let available_sources = proxy
+    .available_source_types()
     .await
     .map_err(|error| error.to_string())?;
 
   let sources = if options.window_name.is_some() || options.window_handle.is_some() {
+    if !available_sources.contains(SourceType::Window) {
+      return Err("The ScreenCast portal does not support window capture".to_owned());
+    }
     SourceType::Window.into()
   } else if options.use_picker.unwrap_or(false) {
-    SourceType::Monitor | SourceType::Window
+    let sources = (SourceType::Monitor | SourceType::Window) & available_sources;
+    if sources.is_empty() {
+      return Err("The ScreenCast portal exposes no monitor or window sources".to_owned());
+    }
+    sources
   } else {
+    if !available_sources.contains(SourceType::Monitor) {
+      return Err("The ScreenCast portal does not support monitor capture".to_owned());
+    }
     SourceType::Monitor.into()
   };
-  let cursor_mode = if options.cursor_capture.unwrap_or(true) {
-    CursorMode::Embedded
-  } else {
-    CursorMode::Hidden
+
+  let cursor_mode = match proxy.available_cursor_modes().await {
+    Ok(available_cursor_modes) => {
+      if options.cursor_capture.unwrap_or(true) {
+        if !available_cursor_modes.contains(CursorMode::Embedded) {
+          return Err("The ScreenCast portal cannot embed the cursor".to_owned());
+        }
+        CursorMode::Embedded
+      } else {
+        if !available_cursor_modes.contains(CursorMode::Hidden) {
+          return Err("The ScreenCast portal cannot hide the cursor".to_owned());
+        }
+        CursorMode::Hidden
+      }
+    }
+    Err(error) if options.cursor_capture.is_some() => {
+      return Err(format!("Failed to query ScreenCast cursor modes: {error}"));
+    }
+    Err(_) => CursorMode::Embedded,
   };
+
+  let session = proxy
+    .create_session(CreateSessionOptions::default())
+    .await
+    .map_err(|error| error.to_string())?;
   proxy
     .select_sources(
       &session,
@@ -475,7 +521,16 @@ fn run_wayland_capture(
     .enable_all()
     .build()
     .map_err(|error| error.to_string())?;
-  let (_session, portal_stream, fd) = runtime.block_on(open_portal(&options))?;
+  let portal = runtime.block_on(async {
+    tokio::select! {
+      result = open_portal(&options) => Some(result),
+      () = wait_for_stop(Arc::clone(&stop)) => None,
+    }
+  });
+  let Some(portal) = portal else {
+    return Ok(());
+  };
+  let (_session, portal_stream, fd) = portal?;
   run_pipewire_stream(
     fd,
     portal_stream.pipe_wire_node_id(),
@@ -483,6 +538,51 @@ fn run_wayland_capture(
     stop,
     on_frame,
   )
+}
+
+async fn wait_for_stop(stop: Arc<AtomicBool>) {
+  while !stop.load(Ordering::Acquire) {
+    tokio::time::sleep(Duration::from_millis(20)).await;
+  }
+}
+
+fn copy_pipewire_row(
+  source: &[u8],
+  destination: &mut [u8],
+  source_format: spa::param::video::VideoFormat,
+  requested_format: ColorFormat,
+) -> bool {
+  match (source_format, requested_format) {
+    (spa::param::video::VideoFormat::BGRA, ColorFormat::Bgra8)
+    | (spa::param::video::VideoFormat::RGBA, ColorFormat::Rgba8) => {
+      destination.copy_from_slice(source);
+      true
+    }
+    (
+      spa::param::video::VideoFormat::BGRx
+      | spa::param::video::VideoFormat::BGRA
+      | spa::param::video::VideoFormat::RGBx
+      | spa::param::video::VideoFormat::RGBA,
+      ColorFormat::Bgra8 | ColorFormat::Rgba8,
+    ) => {
+      for (source, destination) in source.chunks_exact(4).zip(destination.chunks_exact_mut(4)) {
+        let (r, g, b, a) = match source_format {
+          spa::param::video::VideoFormat::BGRx => (source[2], source[1], source[0], 255),
+          spa::param::video::VideoFormat::BGRA => (source[2], source[1], source[0], source[3]),
+          spa::param::video::VideoFormat::RGBx => (source[0], source[1], source[2], 255),
+          spa::param::video::VideoFormat::RGBA => (source[0], source[1], source[2], source[3]),
+          _ => unreachable!(),
+        };
+        if matches!(requested_format, ColorFormat::Bgra8) {
+          destination.copy_from_slice(&[b, g, r, a]);
+        } else {
+          destination.copy_from_slice(&[r, g, b, a]);
+        }
+      }
+      true
+    }
+    _ => false,
+  }
 }
 
 fn run_pipewire_stream(
@@ -509,28 +609,82 @@ fn run_pipewire_stream(
   )
   .map_err(|error| error.to_string())?;
 
+  const SPA_PARAM_BUFFERS_DATA_TYPE: u32 = 6;
+  const DATA_FLAG_MEM_PTR: i32 = 1 << 1;
+  const DATA_FLAG_MEM_FD: i32 = 1 << 2;
+  let buffer_object = spa::pod::object!(
+    spa::utils::SpaTypes::ObjectParamBuffers,
+    spa::param::ParamType::Buffers,
+    spa::pod::Property::new(
+      SPA_PARAM_BUFFERS_DATA_TYPE,
+      spa::pod::Value::Choice(spa::pod::ChoiceValue::Int(spa::utils::Choice(
+        spa::utils::ChoiceFlags::empty(),
+        spa::utils::ChoiceEnum::Flags {
+          default: DATA_FLAG_MEM_PTR | DATA_FLAG_MEM_FD,
+          flags: vec![DATA_FLAG_MEM_PTR, DATA_FLAG_MEM_FD],
+        },
+      ))),
+    ),
+  );
+  let buffer_parameters = spa::pod::serialize::PodSerializer::serialize(
+    Cursor::new(Vec::new()),
+    &spa::pod::Value::Object(buffer_object),
+  )
+  .map_err(|error| error.to_string())?
+  .0
+  .into_inner();
+  let stream_error = Rc::new(RefCell::new(None));
+
   struct UserData {
     format: spa::param::video::VideoInfoRaw,
+    buffer_parameters: Vec<u8>,
   }
   let started = Instant::now();
   let process_stop = Arc::clone(&stop);
   let process_loop = mainloop.clone();
+  let process_error = Rc::clone(&stream_error);
+  let param_loop = mainloop.clone();
+  let param_error = Rc::clone(&stream_error);
+  let state_loop = mainloop.clone();
+  let state_error = Rc::clone(&stream_error);
   let listener = stream
     .add_local_listener_with_user_data(UserData {
       format: Default::default(),
+      buffer_parameters,
     })
-    .param_changed(|_, user_data, id, param| {
+    .param_changed(move |stream, user_data, id, param| {
       let Some(param) = param else { return };
       if id != spa::param::ParamType::Format.as_raw() {
         return;
       }
       let Ok((media_type, media_subtype)) = spa::param::format_utils::parse_format(param) else {
+        *param_error.borrow_mut() = Some("PipeWire returned an invalid video format".to_owned());
+        param_loop.quit();
         return;
       };
-      if media_type == spa::param::format::MediaType::Video
-        && media_subtype == spa::param::format::MediaSubtype::Raw
+      if media_type != spa::param::format::MediaType::Video
+        || media_subtype != spa::param::format::MediaSubtype::Raw
       {
-        let _ = user_data.format.parse(param);
+        *param_error.borrow_mut() = Some("PipeWire returned a non-raw video stream".to_owned());
+        param_loop.quit();
+        return;
+      }
+      if let Err(error) = user_data.format.parse(param) {
+        *param_error.borrow_mut() =
+          Some(format!("Failed to parse PipeWire video format: {error:?}"));
+        param_loop.quit();
+        return;
+      }
+      let Some(parameters) = spa::pod::Pod::from_bytes(&user_data.buffer_parameters) else {
+        *param_error.borrow_mut() = Some("Failed to rebuild PipeWire buffer parameters".to_owned());
+        param_loop.quit();
+        return;
+      };
+      if let Err(error) = stream.update_params(&mut [parameters]) {
+        *param_error.borrow_mut() = Some(format!(
+          "Failed to request linear PipeWire buffers: {error}"
+        ));
+        param_loop.quit();
       }
     })
     .process(move |stream, user_data| {
@@ -551,19 +705,40 @@ fn run_pipewire_stream(
       }
       let stride = data.chunk().stride();
       let offset = data.chunk().offset() as usize;
+      let chunk_size = data.chunk().size() as usize;
+      if chunk_size == 0 {
+        return;
+      }
+      let row_bytes = size.width as usize * 4;
       let row_stride = if stride == 0 {
-        size.width as usize * 4
+        row_bytes
       } else {
         stride.unsigned_abs() as usize
       };
-      let Some(payload) = data.data() else { return };
-      let required = row_stride.saturating_mul(size.height as usize);
-      if payload.len() < offset.saturating_add(required) {
+      if row_stride < row_bytes {
+        *process_error.borrow_mut() =
+          Some("PipeWire returned a row stride smaller than the frame width".to_owned());
+        process_loop.quit();
+        return;
+      }
+      let Some(payload) = data.data() else {
+        *process_error.borrow_mut() =
+          Some("PipeWire returned an unmapped buffer instead of linear memory".to_owned());
+        process_loop.quit();
+        return;
+      };
+      let required = row_stride
+        .saturating_mul(size.height.saturating_sub(1) as usize)
+        .saturating_add(row_bytes);
+      if chunk_size < required || payload.len() < offset.saturating_add(required) {
+        *process_error.borrow_mut() =
+          Some("PipeWire returned an incomplete frame buffer".to_owned());
+        process_loop.quit();
         return;
       }
 
       let source_format = user_data.format.format();
-      let mut pixels = vec![0_u8; size.width as usize * size.height as usize * 4];
+      let mut pixels = vec![0_u8; row_bytes * size.height as usize];
       for output_y in 0..size.height as usize {
         let source_y = if stride < 0 {
           size.height as usize - output_y - 1
@@ -571,42 +746,18 @@ fn run_pipewire_stream(
           output_y
         };
         let source_row = offset + source_y * row_stride;
-        let destination_row = output_y * size.width as usize * 4;
-        for x in 0..size.width as usize {
-          let source = source_row + x * 4;
-          let destination = destination_row + x * 4;
-          let (r, g, b, a) = match source_format {
-            spa::param::video::VideoFormat::BGRx => (
-              payload[source + 2],
-              payload[source + 1],
-              payload[source],
-              255,
-            ),
-            spa::param::video::VideoFormat::BGRA => (
-              payload[source + 2],
-              payload[source + 1],
-              payload[source],
-              payload[source + 3],
-            ),
-            spa::param::video::VideoFormat::RGBx => (
-              payload[source],
-              payload[source + 1],
-              payload[source + 2],
-              255,
-            ),
-            spa::param::video::VideoFormat::RGBA => (
-              payload[source],
-              payload[source + 1],
-              payload[source + 2],
-              payload[source + 3],
-            ),
-            _ => return,
-          };
-          if matches!(requested_format, ColorFormat::Bgra8) {
-            pixels[destination..destination + 4].copy_from_slice(&[b, g, r, a]);
-          } else {
-            pixels[destination..destination + 4].copy_from_slice(&[r, g, b, a]);
-          }
+        let destination_row = output_y * row_bytes;
+        if !copy_pipewire_row(
+          &payload[source_row..source_row + row_bytes],
+          &mut pixels[destination_row..destination_row + row_bytes],
+          source_format,
+          requested_format,
+        ) {
+          *process_error.borrow_mut() = Some(format!(
+            "PipeWire negotiated unsupported format {source_format:?}"
+          ));
+          process_loop.quit();
+          return;
         }
       }
 
@@ -622,6 +773,19 @@ fn run_pipewire_stream(
         color_format: requested_format,
         dirty_regions: Vec::new(),
       });
+    })
+    .state_changed(move |_, _, old, new| match new {
+      pw::stream::StreamState::Error(message) => {
+        *state_error.borrow_mut() = Some(format!("PipeWire stream failed: {message}"));
+        state_loop.quit();
+      }
+      pw::stream::StreamState::Unconnected
+        if !matches!(old, pw::stream::StreamState::Unconnected) =>
+      {
+        *state_error.borrow_mut() = Some("PipeWire stream disconnected".to_owned());
+        state_loop.quit();
+      }
+      _ => {}
     })
     .register()
     .map_err(|error| error.to_string())?;
@@ -712,27 +876,35 @@ fn run_pipewire_stream(
     .map_err(|error| format!("Failed to arm PipeWire stop timer: {error:?}"))?;
   mainloop.run();
   drop(listener);
-  Ok(())
+  let captured_error = stream_error.borrow_mut().take();
+  captured_error.map_or(Ok(()), Err)
 }
 
-#[napi]
-pub fn is_supported() -> Result<bool> {
+fn linux_capture_capabilities() -> Result<(bool, bool)> {
   if std::env::var_os("WAYLAND_DISPLAY").is_none() {
-    return Ok(false);
+    return Ok((false, false));
   }
   let runtime = tokio::runtime::Builder::new_current_thread()
     .enable_all()
     .build()
     .map_err(error)?;
-  Ok(
-    runtime
-      .block_on(async {
-        let connection = ashpd::zbus::Connection::session().await.ok()?;
-        let proxy = Screencast::with_connection(connection).await.ok()?;
-        proxy.available_source_types().await.ok()
-      })
-      .is_some(),
-  )
+  let capabilities = runtime.block_on(async {
+    let connection = ashpd::zbus::Connection::session().await.ok()?;
+    let proxy = Screencast::with_connection(connection).await.ok()?;
+    let source_types = proxy.available_source_types().await.ok()?;
+    let graphics_capture =
+      source_types.contains(SourceType::Monitor) || source_types.contains(SourceType::Window);
+    let cursor_settings = proxy.available_cursor_modes().await.is_ok_and(|modes| {
+      modes.contains(CursorMode::Embedded) && modes.contains(CursorMode::Hidden)
+    });
+    Some((graphics_capture, cursor_settings))
+  });
+  Ok(capabilities.unwrap_or((false, false)))
+}
+
+#[napi]
+pub fn is_supported() -> Result<bool> {
+  linux_capture_capabilities().map(|capabilities| capabilities.0)
 }
 
 #[napi(object)]
@@ -747,10 +919,10 @@ pub struct CaptureApiSupport {
 
 #[napi]
 pub fn capture_api_support() -> Result<CaptureApiSupport> {
-  let graphics_capture = is_supported()?;
+  let (graphics_capture, cursor_settings) = linux_capture_capabilities()?;
   Ok(CaptureApiSupport {
     graphics_capture,
-    cursor_settings: graphics_capture,
+    cursor_settings,
     border_settings: false,
     secondary_windows: false,
     minimum_update_interval: false,
