@@ -436,7 +436,7 @@ fn start_picker_capture(
   let thread_handle = thread::spawn(move || {
     let mut message = MSG::default();
     unsafe {
-      PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
+      let _ = PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
     }
     let thread_id = unsafe { GetCurrentThreadId() };
     thread_id_sender
