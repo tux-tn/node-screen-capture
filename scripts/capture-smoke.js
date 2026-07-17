@@ -17,7 +17,7 @@ if (canEnumerateSources) {
 }
 
 const capture = new ScreenCapture({
-	...(process.platform === "win32" ? { monitorIndex: 1 } : { usePicker: true }),
+	...(process.platform === "win32" || process.platform === "darwin" ? { monitorIndex: 1 } : { usePicker: true }),
 	colorFormat: ColorFormat.Bgra8,
 });
 const configuredFrameLimit = Number.parseInt(process.env.CAPTURE_MAX_FRAMES ?? "", 10);
@@ -38,6 +38,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 
 await capture.start();
 console.log("Capture started. Press Ctrl+C to stop.");
+console.log(await capture.nextFrame());
 
 let totalFrames = 0;
 let intervalFrames = 0;

@@ -1,10 +1,11 @@
 use std::io::Cursor;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crate::common::{bytes_per_pixel, crop_buffer, error};
+use crate::common::{bytes_per_pixel, crop_buffer, error, frame_pitches};
 use image::{DynamicImage, ImageBuffer, Rgba};
 use napi::Status;
 use napi::bindgen_prelude::*;
@@ -135,14 +136,15 @@ impl Frame {
       end_x,
       end_y,
     )?;
-    let row_pitch = width * bytes_per_pixel(matches!(self.color_format, ColorFormat::Rgba16F));
+    let bpp = bytes_per_pixel(matches!(self.color_format, ColorFormat::Rgba16F));
+    let (row_pitch, depth_pitch) = frame_pitches(width, height, bpp)?;
 
     Ok(Self {
       buffer,
       width,
       height,
       row_pitch,
-      depth_pitch: row_pitch * height,
+      depth_pitch,
       timestamp: self.timestamp,
       color_format: self.color_format,
       dirty_regions: Vec::new(),
@@ -184,7 +186,16 @@ fn encode_image(
   if matches!(pixel_format, ColorFormat::Rgba16F) {
     return Err(error("Rgba16F cannot be encoded as an image"));
   }
-  let expected = width as usize * height as usize * 4;
+  const MAX_DIM: u32 = 16384;
+  if width > MAX_DIM || height > MAX_DIM {
+    return Err(error(format!(
+      "Image dimensions ({width}×{height}) exceed maximum ({MAX_DIM}×{MAX_DIM})"
+    )));
+  }
+  let expected: usize = (width as usize)
+    .checked_mul(height as usize)
+    .and_then(|pixels| pixels.checked_mul(4))
+    .ok_or_else(|| error("Arithmetic overflow computing packed image buffer size"))?;
   if buffer.len() != expected {
     return Err(error(format!(
       "Image buffer has {} bytes; expected {expected}",
@@ -232,9 +243,25 @@ pub struct CaptureOptions {
 
 type FrameCallback =
   Arc<ThreadsafeFunction<Frame, UnknownReturnValue, Frame, Status, false, false, 1>>;
-type ClosedCallback = Arc<ThreadsafeFunction<(), UnknownReturnValue, (), Status, false, false, 1>>;
+type ClosedCallback = Arc<
+  ThreadsafeFunction<Option<String>, UnknownReturnValue, Option<String>, Status, false, false, 1>,
+>;
 type FrameSink = Arc<dyn Fn(Frame) + Send + Sync>;
-type ClosedSink = Arc<dyn Fn() + Send + Sync>;
+type ClosedSink = Arc<dyn Fn(Option<String>) + Send + Sync>;
+
+/// Holds a resolved capture target together with the `SCShareableContent`
+/// that backs display / window references inside the filter.  The owner
+/// must stay alive for the full lifetime of `SCStream` so that internal
+/// references to the content object remain valid.
+struct CaptureFilter {
+  filter: SCContentFilter,
+  width: u32,
+  height: u32,
+  #[allow(dead_code)]
+  /// Picker-created filters manage their own content; monitor/window paths
+  /// must retain the `SCShareableContent` fetched just before selection.
+  content: Option<SCShareableContent>,
+}
 
 struct MacosCaptureControl {
   stop: Arc<AtomicBool>,
@@ -346,7 +373,9 @@ impl ScreenCapture {
   pub fn new(
     options: CaptureOptions,
     #[napi(ts_arg_type = "(frame: Frame) => void")] on_frame_arrived: FrameCallback,
-    #[napi(ts_arg_type = "(() => void) | undefined | null")] on_closed: Option<ClosedCallback>,
+    #[napi(ts_arg_type = "((error: string | null) => void) | undefined | null")] on_closed: Option<
+      ClosedCallback,
+    >,
   ) -> Result<Self> {
     let target_count = [
       options.monitor_index.is_some(),
@@ -380,25 +409,87 @@ impl ScreenCapture {
       .on_frame_arrived
       .take()
       .ok_or_else(|| error("Capture session is already started"))?;
-    let on_frame: FrameSink = Arc::new(move |frame| {
-      let _ = callback.call(frame, ThreadsafeFunctionCallMode::NonBlocking);
-    });
+    let stop = Arc::new(AtomicBool::new(false));
+    let pending = Arc::new(AtomicBool::new(false));
+    let failures = Arc::new(AtomicUsize::new(0));
+
+    let on_frame: FrameSink = {
+      let frame_stop = Arc::clone(&stop);
+      let frame_pending = Arc::clone(&pending);
+      let frame_failures = Arc::clone(&failures);
+      Arc::new(move |frame| {
+        if frame_stop.load(Ordering::Acquire) {
+          return;
+        }
+        if frame_pending
+          .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+          .is_err()
+        {
+          return;
+        }
+        let cb_pending = Arc::clone(&frame_pending);
+        let cb_failures = Arc::clone(&frame_failures);
+        let status = callback.call_with_return_value(
+          frame,
+          ThreadsafeFunctionCallMode::NonBlocking,
+          move |_result, _env| {
+            cb_pending.store(false, Ordering::Release);
+            cb_failures.store(0, Ordering::Release);
+            Ok(())
+          },
+        );
+        match status {
+          Status::Ok => {}
+          Status::QueueFull => {
+            frame_pending.store(false, Ordering::Release);
+            let count = frame_failures.fetch_add(1, Ordering::AcqRel) + 1;
+            if count >= 10 {
+              frame_stop.store(true, Ordering::Release);
+            }
+          }
+          _ => {
+            frame_pending.store(false, Ordering::Release);
+            frame_stop.store(true, Ordering::Release);
+          }
+        }
+      })
+    };
+
     let on_closed: ClosedSink = if let Some(callback) = self.on_closed.take() {
-      Arc::new(move || {
-        let _ = callback.call((), ThreadsafeFunctionCallMode::NonBlocking);
+      Arc::new(move |error: Option<String>| {
+        let status = callback.call(error, ThreadsafeFunctionCallMode::Blocking);
+        match status {
+          Status::Ok | Status::Closing => {}
+          _ => {}
+        }
       })
     } else {
-      Arc::new(|| {})
+      Arc::new(|_| {})
     };
-    let stop = Arc::new(AtomicBool::new(false));
+
     let thread_stop = Arc::clone(&stop);
     let options = self.options.clone();
     let thread = thread::Builder::new()
       .name("screen-capture-macos".to_owned())
       .spawn(move || {
-        let result = run_macos_capture(options, thread_stop, on_frame);
-        on_closed();
-        result
+        let result = catch_unwind(AssertUnwindSafe(|| {
+          run_macos_capture(options, thread_stop, on_frame)
+        }));
+        match result {
+          Ok(Ok(())) => {
+            on_closed(None);
+            Ok(())
+          }
+          Ok(Err(e)) => {
+            on_closed(Some(e.clone()));
+            Err(e)
+          }
+          Err(panic) => {
+            let msg = panic_message(panic);
+            on_closed(Some(msg.clone()));
+            Err(msg)
+          }
+        }
       })
       .map_err(error)?;
 
@@ -417,13 +508,25 @@ struct FrameHandler {
   timestamp_origin: Mutex<Option<i128>>,
 }
 
+/// Returns true when the frame status indicates the buffer may carry displayable
+/// content.  Unknown statuses (None) are treated optimistically so the image
+/// buffer can be validated downstream.
+const fn should_process_frame(status: Option<SCFrameStatus>) -> bool {
+  match status {
+    None | Some(SCFrameStatus::Complete) | Some(SCFrameStatus::Started) => true,
+    Some(SCFrameStatus::Idle)
+    | Some(SCFrameStatus::Blank)
+    | Some(SCFrameStatus::Suspended)
+    | Some(SCFrameStatus::Stopped) => false,
+  }
+}
+
 impl SCStreamOutputTrait for FrameHandler {
   fn did_output_sample_buffer(&self, sample: CMSampleBuffer, output_type: SCStreamOutputType) {
-    if !matches!(output_type, SCStreamOutputType::Screen)
-      || !sample
-        .frame_status()
-        .is_some_and(SCFrameStatus::has_content)
-    {
+    if !matches!(output_type, SCStreamOutputType::Screen) {
+      return;
+    }
+    if !should_process_frame(sample.frame_status()) {
       return;
     }
     let presentation_time = sample.output_presentation_timestamp();
@@ -476,19 +579,22 @@ impl SCStreamOutputTrait for FrameHandler {
       }
     }
 
-    let Ok(width) = u32::try_from(width) else {
+    let Ok(w) = u32::try_from(width) else {
       return;
     };
-    let Ok(height) = u32::try_from(height) else {
+    let Ok(h) = u32::try_from(height) else {
       return;
     };
-    let row_pitch = width.saturating_mul(4);
+    let bpp = bytes_per_pixel(false);
+    let Ok((row_pitch, depth_pitch)) = frame_pitches(w, h, bpp) else {
+      return;
+    };
     (self.on_frame)(Frame {
       buffer: pixels,
-      width,
-      height,
+      width: w,
+      height: h,
       row_pitch,
-      depth_pitch: row_pitch.saturating_mul(height),
+      depth_pitch,
       timestamp,
       color_format: self.requested_format,
       dirty_regions: Vec::new(),
@@ -551,9 +657,7 @@ fn macos_major_version() -> std::result::Result<u32, String> {
   Err("macOS version detection is unavailable on this platform".to_owned())
 }
 
-fn picker_filter(
-  stop: &Arc<AtomicBool>,
-) -> std::result::Result<(SCContentFilter, u32, u32), String> {
+fn picker_filter(stop: &Arc<AtomicBool>) -> std::result::Result<CaptureFilter, String> {
   if macos_major_version()? < 14 {
     return Err("The native content picker requires macOS 14 or newer".to_owned());
   }
@@ -585,7 +689,12 @@ fn picker_filter(
   match outcome {
     SCPickerOutcome::Picked(result) => {
       let (width, height) = result.pixel_size();
-      Ok((result.filter(), width, height))
+      Ok(CaptureFilter {
+        filter: result.filter(),
+        width,
+        height,
+        content: None,
+      })
     }
     SCPickerOutcome::Cancelled => Err("Screen capture selection was cancelled".to_owned()),
     SCPickerOutcome::Error(message) => Err(message),
@@ -606,24 +715,34 @@ fn window_capture_filter(window: &SCWindow) -> (SCContentFilter, u32, u32) {
 fn capture_filter(
   options: &CaptureOptions,
   stop: &Arc<AtomicBool>,
-) -> std::result::Result<(SCContentFilter, u32, u32), String> {
+) -> std::result::Result<CaptureFilter, String> {
   if options.use_picker.unwrap_or(false) {
     return picker_filter(stop);
   }
 
   let content = SCShareableContent::get().map_err(|error| error.to_string())?;
+
+  // Fetch display / window vectors once to avoid redundant retrieval
+  // across the target selection branches below.
+  let mut displays = content.displays();
+  let windows = content.windows();
+
   if let Some(handle) = options.window_handle {
     let window_id =
       u32::try_from(handle).map_err(|_| "windowHandle must be a valid macOS window ID")?;
-    let windows = content.windows();
     let window = windows
       .iter()
       .find(|window| window.window_id() == window_id)
       .ok_or_else(|| format!("Window {window_id} was not found"))?;
-    return Ok(window_capture_filter(window));
+    let (filter, width, height) = window_capture_filter(window);
+    return Ok(CaptureFilter {
+      filter,
+      width,
+      height,
+      content: Some(content),
+    });
   }
   if let Some(title) = options.window_name.as_deref() {
-    let windows = content.windows();
     let window = windows
       .iter()
       .find(|window| {
@@ -632,25 +751,38 @@ fn capture_filter(
           .is_some_and(|window_title| window_title.contains(title))
       })
       .ok_or_else(|| format!("No window title contains \"{title}\""))?;
-    return Ok(window_capture_filter(window));
+    let (filter, width, height) = window_capture_filter(window);
+    return Ok(CaptureFilter {
+      filter,
+      width,
+      height,
+      content: Some(content),
+    });
   }
 
   let index = options.monitor_index.unwrap_or(1);
   if index == 0 {
     return Err("monitorIndex is one-based".to_owned());
   }
-  let displays = ordered_displays(&content);
+  // Reorder so the primary display (origin 0,0) comes first.
+  if let Some(primary_index) = displays.iter().position(|display| {
+    let origin = display.frame().origin;
+    origin.x.abs() < f64::EPSILON && origin.y.abs() < f64::EPSILON
+  }) {
+    displays.swap(0, primary_index);
+  }
   let display = displays
     .get(index as usize - 1)
     .ok_or_else(|| format!("Monitor index {index} was not found"))?;
-  Ok((
-    SCContentFilter::create()
+  Ok(CaptureFilter {
+    filter: SCContentFilter::create()
       .with_display(display)
       .with_excluding_windows(&[])
       .build(),
-    display.width(),
-    display.height(),
-  ))
+    width: display.width(),
+    height: display.height(),
+    content: Some(content),
+  })
 }
 
 fn ordered_displays(content: &SCShareableContent) -> Vec<SCDisplay> {
@@ -669,12 +801,17 @@ fn run_macos_capture(
   stop: Arc<AtomicBool>,
   on_frame: FrameSink,
 ) -> std::result::Result<(), String> {
-  let (filter, width, height) = capture_filter(&options, &stop)?;
+  let capture = capture_filter(&options, &stop)?;
+  let filter = &capture.filter;
+  let width = capture.width;
+  let height = capture.height;
+
   let config = SCStreamConfiguration::new()
     .with_width(width)
     .with_height(height)
     .with_pixel_format(PixelFormat::BGRA)
     .with_shows_cursor(options.cursor_capture.unwrap_or(true));
+
   let handler = FrameHandler {
     on_frame,
     requested_format: options.color_format.unwrap_or(ColorFormat::Bgra8),
@@ -689,11 +826,13 @@ fn run_macos_capture(
     }
     delegate_stop.store(true, Ordering::Release);
   });
-  let mut stream = SCStream::new_with_delegate(&filter, &config, delegate);
+  let mut stream = SCStream::new_with_delegate(filter, &config, delegate);
   stream
     .add_output_handler(handler, SCStreamOutputType::Screen)
     .ok_or_else(|| "Failed to register the macOS screen frame handler".to_owned())?;
+
   stream.start_capture().map_err(|error| error.to_string())?;
+
   while !stop.load(Ordering::Acquire) {
     thread::sleep(Duration::from_millis(20));
   }
@@ -704,7 +843,11 @@ fn run_macos_capture(
   {
     return Err(error);
   }
-  stream.stop_capture().map_err(|error| error.to_string())
+  stream.stop_capture().map_err(|error| error.to_string())?;
+  // `capture` is dropped here, releasing the retained SCShareableContent
+  // (if any) after the stream has been fully stopped.
+  drop(capture);
+  Ok(())
 }
 
 #[napi]
@@ -1131,5 +1274,57 @@ impl VideoEncoder {
   #[napi]
   pub fn finish(&mut self) -> Result<Option<Buffer>> {
     Err(unsupported("Video encoding"))
+  }
+}
+
+fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
+  if let Some(s) = panic.downcast_ref::<String>() {
+    s.clone()
+  } else if let Some(s) = panic.downcast_ref::<&str>() {
+    s.to_string()
+  } else {
+    "macOS capture thread panicked with an unknown payload".to_owned()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn should_process_known_content_statuses() {
+    assert!(should_process_frame(Some(SCFrameStatus::Complete)));
+    assert!(should_process_frame(Some(SCFrameStatus::Started)));
+  }
+
+  #[test]
+  fn should_skip_explicit_non_content_statuses() {
+    assert!(!should_process_frame(Some(SCFrameStatus::Idle)));
+    assert!(!should_process_frame(Some(SCFrameStatus::Blank)));
+    assert!(!should_process_frame(Some(SCFrameStatus::Suspended)));
+    assert!(!should_process_frame(Some(SCFrameStatus::Stopped)));
+  }
+
+  #[test]
+  fn should_process_unknown_status() {
+    assert!(should_process_frame(None));
+  }
+
+  #[test]
+  fn panic_message_from_string() {
+    let msg = panic_message(Box::new("test panic".to_string()));
+    assert_eq!(msg, "test panic");
+  }
+
+  #[test]
+  fn panic_message_from_str() {
+    let msg = panic_message(Box::new("test panic str"));
+    assert_eq!(msg, "test panic str");
+  }
+
+  #[test]
+  fn panic_message_from_unknown() {
+    let msg = panic_message(Box::new(42_u32));
+    assert!(msg.contains("unknown payload"));
   }
 }

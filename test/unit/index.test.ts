@@ -46,8 +46,8 @@ describe("ScreenCapture wrapper", () => {
 	test("delivers native frames and stops the native session", async () => {
 		const frame: TestFrame = { id: 1 };
 		let onFrame: (value: TestFrame) => void = () => {};
-		let onClosed: () => void = () => {};
-		const control: NativeControl = { stop: vi.fn(async () => onClosed()) };
+		let onClosed: (error: string | null) => void = () => {};
+		const control: NativeControl = { stop: vi.fn(async () => onClosed(null)) };
 		const nativeCapture: NativeCapture = {
 			start: vi.fn(() => control),
 		};
@@ -97,8 +97,8 @@ describe("ScreenCapture wrapper", () => {
 	test("starts and stops automatically through the async iterator", async () => {
 		const frame: TestFrame = { id: 2 };
 		let onFrame: (value: TestFrame) => void = () => {};
-		let onClosed: () => void = () => {};
-		const control: NativeControl = { stop: vi.fn(async () => onClosed()) };
+		let onClosed: (error: string | null) => void = () => {};
+		const control: NativeControl = { stop: vi.fn(async () => onClosed(null)) };
 		const nativeCapture: NativeCapture = {
 			start: vi.fn(() => {
 				onFrame(frame);
@@ -119,5 +119,64 @@ describe("ScreenCapture wrapper", () => {
 
 		expect(frames).toEqual([frame]);
 		expect(control.stop).toHaveBeenCalledOnce();
+	});
+
+	test("rejects pending nextFrame when native close reports an error", async () => {
+		let onClosed: (error: string | null) => void = () => {};
+		const control: NativeControl = { stop: vi.fn(async () => {}) };
+		const nativeCapture: NativeCapture = {
+			start: vi.fn(() => control),
+		};
+		native.ScreenCapture.mockImplementation(function (_options, _frameCallback, closedCallback) {
+			onClosed = closedCallback;
+			return nativeCapture;
+		});
+
+		const capture = new ScreenCapture({});
+		await capture.start();
+		const pending = capture.nextFrame();
+
+		onClosed("native stream error");
+
+		await expect(pending).rejects.toThrow("native stream error");
+	});
+
+	test("rejects future nextFrame calls after native close error", async () => {
+		let onClosed: (error: string | null) => void = () => {};
+		const control: NativeControl = { stop: vi.fn(async () => {}) };
+		const nativeCapture: NativeCapture = {
+			start: vi.fn(() => control),
+		};
+		native.ScreenCapture.mockImplementation(function (_options, _frameCallback, closedCallback) {
+			onClosed = closedCallback;
+			return nativeCapture;
+		});
+
+		const capture = new ScreenCapture({});
+		await capture.start();
+
+		onClosed("native stream error");
+
+		await expect(capture.nextFrame()).rejects.toThrow("native stream error");
+	});
+
+	test("resolves nextFrame as undefined when native close reports null", async () => {
+		let onClosed: (error: string | null) => void = () => {};
+		const control: NativeControl = { stop: vi.fn(async () => {}) };
+		const nativeCapture: NativeCapture = {
+			start: vi.fn(() => control),
+		};
+		native.ScreenCapture.mockImplementation(function (_options, _frameCallback, closedCallback) {
+			onClosed = closedCallback;
+			return nativeCapture;
+		});
+
+		const capture = new ScreenCapture({});
+		await capture.start();
+		const pending = capture.nextFrame();
+
+		onClosed(null);
+
+		await expect(pending).resolves.toBeUndefined();
 	});
 });

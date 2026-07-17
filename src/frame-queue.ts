@@ -3,14 +3,17 @@ export class LatestFrameQueue<T> {
 	#pending:
 		| {
 				resolve: (value: T | undefined) => void;
+				reject: (reason: unknown) => void;
 				promise: Promise<T | undefined>;
 		  }
 		| undefined;
 	#closed = true;
+	#failure: Error | undefined;
 
 	open(): void {
 		this.#closed = false;
 		this.#latest = undefined;
+		this.#failure = undefined;
 	}
 
 	push(value: T): void {
@@ -25,6 +28,9 @@ export class LatestFrameQueue<T> {
 	}
 
 	next(): Promise<T | undefined> {
+		if (this.#failure) {
+			return Promise.reject(this.#failure);
+		}
 		if (this.#latest !== undefined) {
 			const value = this.#latest;
 			this.#latest = undefined;
@@ -34,9 +40,18 @@ export class LatestFrameQueue<T> {
 		if (this.#pending) {
 			return Promise.reject(new Error("nextFrame() already has a pending consumer"));
 		}
-		const { promise, resolve } = Promise.withResolvers<T | undefined>();
-		this.#pending = { promise, resolve };
+		const { promise, resolve, reject } = Promise.withResolvers<T | undefined>();
+		this.#pending = { promise, resolve, reject };
 		return promise;
+	}
+
+	fail(error: Error): void {
+		this.#failure = error;
+		if (this.#pending) {
+			const { reject } = this.#pending;
+			this.#pending = undefined;
+			reject(error);
+		}
 	}
 
 	close(): void {

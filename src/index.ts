@@ -46,7 +46,12 @@ export class ScreenCapture implements AsyncIterable<Native.Frame> {
 			const capture = new NativeScreenCapture(
 				this.#options,
 				(frame: Native.Frame) => this.#frames.push(frame),
-				() => this.#frames.close(),
+				(error: string | null) => {
+					if (error) {
+						this.#frames.fail(new Error(error));
+					}
+					this.#frames.close();
+				},
 			);
 			this.#control = capture.start();
 			return Promise.resolve();

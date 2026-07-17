@@ -52,4 +52,49 @@ describe("LatestFrameQueue", () => {
 
 		await expect(queue.next()).resolves.toBeUndefined();
 	});
+
+	test("fail rejects a pending consumer", async () => {
+		const queue = new LatestFrameQueue<number>();
+		queue.open();
+		const pending = queue.next();
+		const error = new Error("native capture error");
+
+		queue.fail(error);
+
+		await expect(pending).rejects.toBe(error);
+	});
+
+	test("fail rejects future next() calls", async () => {
+		const queue = new LatestFrameQueue<number>();
+		queue.open();
+		const error = new Error("native capture error");
+
+		queue.fail(error);
+
+		await expect(queue.next()).rejects.toBe(error);
+	});
+
+	test("open resets failure state", async () => {
+		const queue = new LatestFrameQueue<number>();
+		queue.open();
+		const error = new Error("native capture error");
+
+		queue.fail(error);
+		queue.open();
+
+		const frame = queue.next();
+		queue.push(42);
+		await expect(frame).resolves.toBe(42);
+	});
+
+	test("close still resolves undefined when no failure is set", async () => {
+		const queue = new LatestFrameQueue<number>();
+		queue.open();
+		const pending = queue.next();
+
+		queue.close();
+
+		await expect(pending).resolves.toBeUndefined();
+		await expect(queue.next()).resolves.toBeUndefined();
+	});
 });

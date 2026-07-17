@@ -37,7 +37,7 @@ export declare class ImageEncoder {
 }
 
 export declare class ScreenCapture {
-  constructor(options: CaptureOptions, onFrameArrived: (frame: Frame) => void, onClosed?: (() => void) | undefined | null)
+  constructor(options: CaptureOptions, onFrameArrived: (frame: Frame) => void, onClosed?: ((error: string | null) => void) | undefined | null)
   start(): CaptureControl
 }
 
