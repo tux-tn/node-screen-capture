@@ -21,6 +21,14 @@ use screencapturekit::content_sharing_picker::{
 use screencapturekit::cv::CVPixelBufferLockFlags;
 use screencapturekit::prelude::*;
 
+// FFI to the local Swift helper (lib/ScreenCaptureHelper.swift).
+// These are only called on macOS and only from the process main thread.
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+  fn screen_capture_helper_bootstrap_nsapp() -> bool;
+  fn screen_capture_helper_pump_main_run_loop(timeout_ms: f64) -> bool;
+}
+
 fn unsupported(feature: &str) -> Error {
   error(format!("{feature} is unavailable on macOS"))
 }
@@ -469,6 +477,64 @@ impl ScreenCapture {
 
     let thread_stop = Arc::clone(&stop);
     let options = self.options.clone();
+
+    if options.use_picker.unwrap_or(false) {
+      // ── Picker path ──────────────────────────────────────────
+      //
+      // The picker MUST run on the process main thread because:
+      //  1. NSApplication needs to be initialised there.
+      //  2. The screencapturekit Swift bridge dispatches
+      //     picker.present() and observer callbacks to
+      //     DispatchQueue.main, which relies on the main
+      //     CFRunLoop being pumped.
+      //
+      // We resolve the CaptureFilter synchronously here, then
+      // spawn the capture worker with the already-resolved filter.
+      let on_closed_for_thread = Arc::clone(&on_closed);
+      let thread_stop_capture = Arc::clone(&stop);
+      let options_capture = options.clone();
+
+      let capture = match picker_filter_main_thread(&stop) {
+        Ok(filter) => filter,
+        Err(e) => {
+          on_closed(Some(e.clone()));
+          return Err(error(e));
+        }
+      };
+
+      let thread = thread::Builder::new()
+        .name("screen-capture-macos".to_owned())
+        .spawn(move || {
+          let result = catch_unwind(AssertUnwindSafe(|| {
+            run_macos_capture_with_filter(options_capture, capture, thread_stop_capture, on_frame)
+          }));
+          match result {
+            Ok(Ok(())) => {
+              on_closed_for_thread(None);
+              Ok(())
+            }
+            Ok(Err(e)) => {
+              on_closed_for_thread(Some(e.clone()));
+              Err(e)
+            }
+            Err(panic) => {
+              let msg = panic_message(panic);
+              on_closed_for_thread(Some(msg.clone()));
+              Err(msg)
+            }
+          }
+        })
+        .map_err(error)?;
+
+      return Ok(CaptureControl {
+        inner: Some(MacosCaptureControl {
+          stop,
+          thread: Some(thread),
+        }),
+      });
+    }
+
+    // ── Non-picker path (existing behaviour) ─────────────────
     let thread = thread::Builder::new()
       .name("screen-capture-macos".to_owned())
       .spawn(move || {
@@ -657,9 +723,26 @@ fn macos_major_version() -> std::result::Result<u32, String> {
   Err("macOS version detection is unavailable on this platform".to_owned())
 }
 
-fn picker_filter(stop: &Arc<AtomicBool>) -> std::result::Result<CaptureFilter, String> {
+/// Resolve the capture filter via the system content-sharing picker.
+///
+/// **Must be called from the process main thread.** Bootstraps NSApplication
+/// via the Swift helper (if it hasn't been initialised yet) and then pumps
+/// the main CFRunLoop until the picker delivers a result or the consumer
+/// signals cancellation via `stop`.
+///
+/// The caller MUST spawn the capture worker **after** this function returns
+/// so the picker UI phase is completed on the main thread before
+/// `SCStream` is created on a background thread.
+fn picker_filter_main_thread(stop: &Arc<AtomicBool>) -> std::result::Result<CaptureFilter, String> {
   if macos_major_version()? < 14 {
     return Err("The native content picker requires macOS 14 or newer".to_owned());
+  }
+
+  // Bootstrap NSApplication – the Swift bridge's internal
+  // DispatchQueue.main.async block expects an initialised NSApp.
+  let ok = unsafe { screen_capture_helper_bootstrap_nsapp() };
+  if !ok {
+    return Err("Failed to initialize NSApplication for the content picker".to_owned());
   }
 
   let mut config = SCContentSharingPickerConfiguration::new();
@@ -667,25 +750,37 @@ fn picker_filter(stop: &Arc<AtomicBool>) -> std::result::Result<CaptureFilter, S
     SCContentSharingPickerMode::SingleWindow,
     SCContentSharingPickerMode::SingleDisplay,
   ]);
-  let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+
+  // Use an unbounded channel so `send` never blocks inside the run-loop
+  // source handler (the observer callback fires on the main thread).
+  let (sender, receiver) = std::sync::mpsc::channel();
   SCContentSharingPicker::show(&config, move |outcome| {
     let _ = sender.send(outcome);
   });
+
   let outcome = loop {
-    match receiver.recv_timeout(Duration::from_millis(20)) {
+    // Pump the AppKit run loop to process picker UI events and the GCD
+    // main-queue blocks that the Swift bridge dispatches.
+    unsafe {
+      screen_capture_helper_pump_main_run_loop(20.0);
+    }
+
+    match receiver.try_recv() {
       Ok(outcome) => break outcome,
-      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+      Err(std::sync::mpsc::TryRecvError::Empty) => {
         if stop.load(Ordering::Acquire) {
           SCContentSharingPicker::set_active(false);
           return Err("Screen capture stopped before content selection".to_owned());
         }
       }
-      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+      Err(std::sync::mpsc::TryRecvError::Disconnected) => {
         return Err("The macOS content picker closed without a result".to_owned());
       }
     }
   };
+
   SCContentSharingPicker::set_active(false);
+
   match outcome {
     SCPickerOutcome::Picked(result) => {
       let (width, height) = result.pixel_size();
@@ -712,14 +807,7 @@ fn window_capture_filter(window: &SCWindow) -> (SCContentFilter, u32, u32) {
   )
 }
 
-fn capture_filter(
-  options: &CaptureOptions,
-  stop: &Arc<AtomicBool>,
-) -> std::result::Result<CaptureFilter, String> {
-  if options.use_picker.unwrap_or(false) {
-    return picker_filter(stop);
-  }
-
+fn capture_filter(options: &CaptureOptions) -> std::result::Result<CaptureFilter, String> {
   let content = SCShareableContent::get().map_err(|error| error.to_string())?;
 
   // Fetch display / window vectors once to avoid redundant retrieval
@@ -801,7 +889,21 @@ fn run_macos_capture(
   stop: Arc<AtomicBool>,
   on_frame: FrameSink,
 ) -> std::result::Result<(), String> {
-  let capture = capture_filter(&options, &stop)?;
+  let capture = capture_filter(&options)?;
+  run_macos_capture_with_filter(options, capture, stop, on_frame)
+}
+
+/// Shared capture loop used by both the picker and non-picker paths.
+///
+/// The caller must already have resolved the `CaptureFilter`; this function
+/// only creates the `SCStream`, registers handlers, and enters the event
+/// loop. It can run on any thread (typically the spawned capture worker).
+fn run_macos_capture_with_filter(
+  options: CaptureOptions,
+  capture: CaptureFilter,
+  stop: Arc<AtomicBool>,
+  on_frame: FrameSink,
+) -> std::result::Result<(), String> {
   let filter = &capture.filter;
   let width = capture.width;
   let height = capture.height;
