@@ -1,13 +1,29 @@
 # @screen-capture/node
 
-Cross-platform native screen capture for Node.js. Windows uses [`windows-capture` 2.0.0](https://github.com/NiiightmareXD/windows-capture), macOS uses [`screencapturekit` 8](https://crates.io/crates/screencapturekit), and Linux/Wayland uses the XDG ScreenCast portal and PipeWire.
+[![CI](https://github.com/tux-tn/node-screen-capture/actions/workflows/CI.yml/badge.svg)](https://github.com/tux-tn/node-screen-capture/actions/workflows/CI.yml)
+[![npm version](https://img.shields.io/npm/v/%40screen-capture%2Fnode)](https://www.npmjs.com/package/%40screen-capture%2Fnode)
+[![npm downloads](https://img.shields.io/npm/dm/%40screen-capture%2Fnode)](https://www.npmjs.com/package/%40screen-capture%2Fnode)
+[![Node.js version](https://img.shields.io/node/v/%40screen-capture%2Fnode)](https://www.npmjs.com/package/%40screen-capture%2Fnode)
+[![License](https://img.shields.io/github/license/tux-tn/node-screen-capture)](https://github.com/tux-tn/node-screen-capture/blob/main/LICENSE)
+
+Cross-platform native screen capture for Node.js. Windows uses [`windows-capture` 2.0.0](https://github.com/NiiightmareXD/windows-capture), macOS uses [`screencapturekit` 8](https://github.com/doom-fish/screencapturekit-rs), and Linux/Wayland uses the XDG ScreenCast portal and the [`pipewire` crate](https://crates.io/crates/pipewire).
+
+## Features
+
+- Native capture through Windows Graphics Capture, ScreenCaptureKit, or the XDG ScreenCast portal and PipeWire
+- Promise-based and async-iterator APIs with bounded frame buffering
+- Packed RGBA/BGRA frames with cropping, dirty-region metadata, timestamps, and image encoding
+- Native source pickers on Windows and macOS, plus portal-based source selection on Wayland
+- Windows-only DXGI Desktop Duplication and Media Foundation video encoding
 
 ## Table of contents
 
+- [Features](#features)
 - [Requirements](#requirements)
 - [Platform support](#platform-support)
 - [Installation](#installation)
 - [Quick start](#quick-start)
+- [Examples](#examples)
 - [Screen capture](#screen-capture)
   - [`ScreenCapture`](#screencapture)
   - [Capture targets and options](#capture-targets-and-options)
@@ -29,17 +45,18 @@ Cross-platform native screen capture for Node.js. Windows uses [`windows-capture
 ## Requirements
 
 - Node.js 20.17+, 22.13+, or 23.5+
-- Windows 10 version 1903 or newer with the MSVC runtime,
-- macOS 12.3 or newer with Screen Recording permission; the native picker requires macOS 14 or newer, or
+- Windows 10 version 1903 or newer with the MSVC runtime
+- macOS 12.3 or newer with Screen Recording permission; the native picker requires macOS 14 or newer
 - Linux with Wayland, PipeWire 0.3, and a working `xdg-desktop-portal` ScreenCast backend
 
-Check `isSupported()` and `captureApiSupport()` before starting capture. macOS requires Screen Recording permission in System Settings. Wayland always delegates source selection to the desktop portal.
+> [!IMPORTANT]
+> macOS requires Screen Recording permission in System Settings. Check `isSupported()` and `captureApiSupport()` before starting capture.
 
 ## Platform support
 
 | Capability | Windows | macOS | Linux/Wayland |
 | --- | --- | --- | --- |
-| Screen or window capture | Yes | Yes, through ScreenCaptureKit | Yes, through the XDG ScreenCast portal |
+| Screen or window capture | Yes | Yes, through [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) | Yes, through the XDG ScreenCast portal |
 | Promise and async-iterator frame API | Yes | Yes | Yes |
 | Cursor capture | Yes | Yes | Yes, when the portal supports it |
 | Native content picker | Yes | Yes, on macOS 14+ | Yes, through the portal |
@@ -51,17 +68,17 @@ Check `isSupported()` and `captureApiSupport()` before starting capture. macOS r
 | DXGI Desktop Duplication | Yes | No | No |
 | Video encoding | Yes | No | No |
 
-The public TypeScript surface is shared across all three backends. `ScreenCapture` is the platform-neutral capture class. Unsupported platform-specific methods throw an explicit error instead of silently changing behavior.
+> [!WARNING]
+> DXGI Desktop Duplication and `VideoEncoder` are Windows-only. Calling an unsupported platform-specific API throws an explicit error instead of silently changing behavior.
 
-On Wayland, every new capture session opens the desktop portal. The user chooses the actual monitor or window; applications cannot bypass that consent dialog or enumerate sources ahead of time.
+> [!NOTE]
+> On Wayland, every new capture session opens the desktop portal. The user chooses the actual monitor or window; applications cannot bypass that consent dialog or enumerate sources ahead of time.
 
 ## Installation
 
 ```bash
 npm install @screen-capture/node
-```
-
-```bash
+# or
 pnpm add @screen-capture/node
 ```
 
@@ -97,6 +114,32 @@ await capture.stop()
 ```
 
 `monitorIndex` is one-based on Windows and macOS. On Wayland, omit direct target selectors; the portal asks the user which monitor or window to share.
+
+## Examples
+
+Runnable examples are available in [`examples/`](examples):
+
+| Example | Platforms | Purpose |
+| --- | --- | --- |
+| [`capture-screenshot.js`](examples/capture-screenshot.js) | Windows, macOS, Wayland | Capture one frame and save it as PNG |
+| [`stream-frames.js`](examples/stream-frames.js) | Windows, macOS, Wayland | Consume frames through the async iterator |
+| [`discover-sources.js`](examples/discover-sources.js) | Windows, macOS | Enumerate monitors and top-level windows |
+| [`windows-dxgi-screenshot.js`](examples/windows-dxgi-screenshot.js) | Windows | Capture a synchronous DXGI desktop frame |
+| [`windows-record-video.js`](examples/windows-record-video.js) | Windows | Record H.264 video with Media Foundation |
+
+Build the package before running examples from a repository checkout:
+
+```bash
+pnpm build
+node examples/capture-screenshot.js screenshot.png
+node examples/stream-frames.js 120
+node examples/discover-sources.js
+node examples/windows-dxgi-screenshot.js dxgi-screenshot.png
+node examples/windows-record-video.js capture.mp4 300
+```
+
+> [!NOTE]
+> The cross-platform capture examples open the desktop portal on Wayland. Windows-only examples fail immediately on other platforms.
 
 ## Screen capture
 
@@ -152,7 +195,7 @@ interface CaptureOptions {
 | --- | --- |
 | `monitorIndex` | Windows and macOS: one-based monitor index. Wayland: unsupported as a direct selector; omit it and let the portal choose. |
 | `windowName` | Windows and macOS: captures the first top-level window whose title contains this string. Wayland: unsupported; use the portal picker. |
-| `windowHandle` | Windows: native `HWND`. macOS: ScreenCaptureKit window ID. Wayland: unsupported; use the portal picker. |
+| `windowHandle` | Windows: native [`HWND`](https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types#HWND). macOS: [ScreenCaptureKit window ID](https://developer.apple.com/documentation/screencapturekit/scwindow/windowid). Wayland: unsupported; use the portal picker. |
 | `usePicker` | Opens the native Windows or macOS picker, or allows monitor/window selection in the Wayland portal. The macOS picker requires macOS 14+. |
 | `cursorCapture` | Includes or excludes the cursor when supported. |
 | `drawBorder` | Windows-only capture-border control. |
@@ -558,33 +601,106 @@ encoder.finish()
 
 ## Constants and supported values
 
+The values below are exported as `const enum`s. Use the enum members in application code, for example `ImageFormat.Png`.
+
 ### `ColorFormat`
 
-`Rgba16F`, `Rgba8`, `Bgra8`
+```ts
+enum ColorFormat {
+  Rgba16F = 'rgba16F',
+  Rgba8 = 'rgba8',
+  Bgra8 = 'bgra8',
+}
+```
 
 ### `ImageFormat`
 
-`Jpeg`, `Png`, `Gif`, `Tiff`, `Bmp`, `JpegXr` (`JpegXr` is Windows-only)
+```ts
+enum ImageFormat {
+  Jpeg = 'jpeg',
+  Png = 'png',
+  Gif = 'gif',
+  Tiff = 'tiff',
+  Bmp = 'bmp',
+  JpegXr = 'jpegXr',
+}
+```
+
+`JpegXr` is Windows-only.
 
 ### `ImageEncoderPixelFormat`
 
-`Rgb16F`, `Bgra8`, `Rgba8` (`Rgb16F` is Windows-only)
+```ts
+enum ImageEncoderPixelFormat {
+  Rgb16F = 'rgb16F',
+  Bgra8 = 'bgra8',
+  Rgba8 = 'rgba8',
+}
+```
+
+`Rgb16F` is Windows-only.
 
 ### `DxgiDuplicationFormat`
 
-`Rgba16F`, `Rgb10A2`, `Rgb10XrA2`, `Rgba8`, `Rgba8Srgb`, `Bgra8`, `Bgra8Srgb`
+```ts
+enum DxgiDuplicationFormat {
+  Rgba16F = 'rgba16F',
+  Rgb10A2 = 'rgb10A2',
+  Rgb10XrA2 = 'rgb10XrA2',
+  Rgba8 = 'rgba8',
+  Rgba8Srgb = 'rgba8Srgb',
+  Bgra8 = 'bgra8',
+  Bgra8Srgb = 'bgra8Srgb',
+}
+```
 
-### `VideoCodec`
+Windows-only.
 
-`Argb32`, `Bgra8`, `D16`, `H263`, `H264`, `H264Es`, `Hevc`, `HevcEs`, `Iyuv`, `L8`, `L16`, `Mjpg`, `Nv12`, `Mpeg1`, `Mpeg2`, `Rgb24`, `Rgb32`, `Wmv3`, `Wvc1`, `Vp9`, `Yuy2`, `Yv12`
+### Video and audio codecs
 
-### `AudioCodec`
+<details>
+<summary>VideoCodec values</summary>
 
-`Aac`, `Ac3`, `AacAdts`, `AacHdcp`, `Ac3Spdif`, `Ac3Hdcp`, `Adts`, `Alac`, `AmrNb`, `AwrWb`, `Dts`, `Eac3`, `Flac`, `Float`, `Mp3`, `Mpeg`, `Opus`, `Pcm`, `Wma8`, `Wma9`, `Vorbis`
+```text
+Argb32  Bgra8  D16  H263  H264  H264Es  Hevc  HevcEs  Iyuv
+L8  L16  Mjpg  Nv12  Mpeg1  Mpeg2  Rgb24  Rgb32  Wmv3  Wvc1
+Vp9  Yuy2  Yv12
+```
+
+</details>
+
+<details>
+<summary>AudioCodec values</summary>
+
+```text
+Aac  Ac3  AacAdts  AacHdcp  Ac3Spdif  Ac3Hdcp  Adts  Alac
+AmrNb  AwrWb  Dts  Eac3  Flac  Float  Mp3  Mpeg  Opus  Pcm
+Wma8  Wma9  Vorbis
+```
+
+</details>
+
+Both codec enums are Windows-only and are used by `VideoEncoder`.
 
 ### `ContainerFormat`
 
-`Asf`, `Mp3`, `Mpeg4`, `Avi`, `Mpeg2`, `Wave`, `AacAdts`, `Adts`, `ThreeGp`, `Amr`, `Flac`
+```ts
+enum ContainerFormat {
+  Asf = 'asf',
+  Mp3 = 'mp3',
+  Mpeg4 = 'mpeg4',
+  Avi = 'avi',
+  Mpeg2 = 'mpeg2',
+  Wave = 'wave',
+  AacAdts = 'aacAdts',
+  Adts = 'adts',
+  ThreeGp = 'threeGp',
+  Amr = 'amr',
+  Flac = 'flac',
+}
+```
+
+Windows-only.
 
 ## Rust compatibility
 
@@ -603,9 +719,9 @@ On Windows, the binding follows the application-facing portions of [`windows-cap
 | `VideoEncoder` | `VideoEncoder`, audio settings, codecs, and containers |
 | Graphics Capture feature probes | `isSupported()` and `captureApiSupport()` |
 
-On macOS, [`screencapturekit` 8](https://docs.rs/screencapturekit/8.0.0/screencapturekit/) supplies display/window discovery, ScreenCaptureKit streams, the macOS 14+ content picker, BGRA pixel buffers, and Screen Recording permission checks. Frames are copied into packed Node.js buffers before crossing the native callback boundary.
+On macOS, [`screencapturekit` 8](https://github.com/doom-fish/screencapturekit-rs) supplies display/window discovery, ScreenCaptureKit streams, the macOS 14+ content picker, BGRA pixel buffers, and Screen Recording permission checks. Frames are copied into packed Node.js buffers before crossing the native callback boundary.
 
-On Linux, `ScreenCapture` implements the same promise and async-iterator lifecycle with the XDG ScreenCast portal and PipeWire. The portal's security model prevents parity for source discovery and direct source selection; DXGI and Windows Media Foundation APIs remain Windows-only.
+On Linux, `ScreenCapture` implements the same promise and async-iterator lifecycle with the XDG ScreenCast portal and the [`pipewire` crate](https://crates.io/crates/pipewire). The portal's security model prevents parity for source discovery and direct source selection; DXGI and Windows Media Foundation APIs remain Windows-only.
 
 Raw COM interfaces, D3D11 devices, textures, and surfaces are intentionally not exposed to JavaScript. Frames are represented as owned Node.js buffers so their lifetime is safe across the promise and async-iterator boundaries.
 
