@@ -3,11 +3,11 @@ use std::io::Cursor;
 use std::os::fd::OwnedFd;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::common::{bytes_per_pixel, crop_buffer, error};
+use crate::common::{bytes_per_pixel, crop_buffer, error, frame_pitches};
 use ashpd::desktop::screencast::{
   CursorMode, OpenPipeWireRemoteOptions, Screencast, SelectSourcesOptions, SourceType,
   StartCastOptions, Stream as PortalStream,
@@ -141,14 +141,15 @@ impl Frame {
       end_x,
       end_y,
     )?;
-    let row_pitch = width * bytes_per_pixel(matches!(self.color_format, ColorFormat::Rgba16F));
+    let bpp = bytes_per_pixel(matches!(self.color_format, ColorFormat::Rgba16F));
+    let (row_pitch, depth_pitch) = frame_pitches(width, height, bpp)?;
 
     Ok(Self {
       buffer,
       width,
       height,
       row_pitch,
-      depth_pitch: row_pitch * height,
+      depth_pitch,
       timestamp: self.timestamp,
       color_format: self.color_format,
       dirty_regions: Vec::new(),
@@ -190,7 +191,15 @@ fn encode_image(
   if matches!(pixel_format, ColorFormat::Rgba16F) {
     return Err(error("Rgba16F cannot be encoded as an image"));
   }
-  let expected = width as usize * height as usize * 4;
+  if width > 16384 || height > 16384 {
+    return Err(error(format!(
+      "Image dimensions {width}x{height} exceed maximum 16384x16384"
+    )));
+  }
+  let expected: usize = (width as usize)
+    .checked_mul(height as usize)
+    .and_then(|pixels| pixels.checked_mul(4))
+    .ok_or_else(|| error("Arithmetic overflow computing expected buffer length"))?;
   if buffer.len() != expected {
     return Err(error(format!(
       "Image buffer has {} bytes; expected {expected}",
@@ -238,9 +247,11 @@ pub struct CaptureOptions {
 
 type FrameCallback =
   Arc<ThreadsafeFunction<Frame, UnknownReturnValue, Frame, Status, false, false, 1>>;
-type ClosedCallback = Arc<ThreadsafeFunction<(), UnknownReturnValue, (), Status, false, false, 1>>;
+type ClosedCallback = Arc<
+  ThreadsafeFunction<Option<String>, UnknownReturnValue, Option<String>, Status, false, false, 1>,
+>;
 type FrameSink = Arc<dyn Fn(Frame) + Send + Sync>;
-type ClosedSink = Arc<dyn Fn() + Send + Sync>;
+type ClosedSink = Arc<dyn Fn(Option<String>) + Send + Sync>;
 
 struct WaylandCaptureControl {
   stop: Arc<AtomicBool>,
@@ -352,7 +363,9 @@ impl ScreenCapture {
   pub fn new(
     options: CaptureOptions,
     #[napi(ts_arg_type = "(frame: Frame) => void")] on_frame_arrived: FrameCallback,
-    #[napi(ts_arg_type = "(() => void) | undefined | null")] on_closed: Option<ClosedCallback>,
+    #[napi(ts_arg_type = "((error: string | null) => void) | undefined | null")] on_closed: Option<
+      ClosedCallback,
+    >,
   ) -> Result<Self> {
     let target_count = [
       options.monitor_index.is_some(),
@@ -394,25 +407,88 @@ impl ScreenCapture {
       .on_frame_arrived
       .take()
       .ok_or_else(|| error("Capture session is already started"))?;
-    let on_frame: FrameSink = Arc::new(move |frame| {
-      let _ = callback.call(frame, ThreadsafeFunctionCallMode::NonBlocking);
-    });
+    let stop = Arc::new(AtomicBool::new(false));
+    let pending = Arc::new(AtomicBool::new(false));
+    let consecutive = Arc::new(AtomicUsize::new(0));
+    let on_frame: FrameSink = {
+      let stop = Arc::clone(&stop);
+      let pending = Arc::clone(&pending);
+      let consecutive = Arc::clone(&consecutive);
+      Arc::new(move |frame| {
+        if stop.load(Ordering::Acquire) {
+          return;
+        }
+        if pending
+          .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+          .is_err()
+        {
+          return;
+        }
+        let completion_pending = Arc::clone(&pending);
+        let completion_consecutive = Arc::clone(&consecutive);
+        match callback.call_with_return_value(
+          frame,
+          ThreadsafeFunctionCallMode::NonBlocking,
+          move |_result, _env| {
+            completion_pending.store(false, Ordering::Release);
+            completion_consecutive.store(0, Ordering::Release);
+            Ok(())
+          },
+        ) {
+          Status::Ok => {}
+          status => {
+            pending.store(false, Ordering::Release);
+            match status {
+              Status::QueueFull => {
+                let count = consecutive.fetch_add(1, Ordering::AcqRel) + 1;
+                if count >= 10 {
+                  stop.store(true, Ordering::Release);
+                }
+              }
+              _ => {
+                stop.store(true, Ordering::Release);
+              }
+            }
+          }
+        }
+      })
+    };
     let on_closed: ClosedSink = if let Some(callback) = self.on_closed.take() {
-      Arc::new(move || {
-        let _ = callback.call((), ThreadsafeFunctionCallMode::NonBlocking);
+      Arc::new(move |error: Option<String>| {
+        let _ = callback.call(error, ThreadsafeFunctionCallMode::Blocking);
       })
     } else {
-      Arc::new(|| {})
+      Arc::new(|_| {})
     };
-    let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
     let options = self.options.clone();
     let thread = thread::Builder::new()
       .name("screen-capture-wayland".to_owned())
       .spawn(move || {
-        let result = run_wayland_capture(options, thread_stop, on_frame);
-        on_closed();
-        result
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+          run_wayland_capture(options, thread_stop, on_frame)
+        }));
+        match result {
+          Ok(Ok(())) => {
+            on_closed(None);
+            Ok(())
+          }
+          Ok(Err(e)) => {
+            on_closed(Some(e.clone()));
+            Err(e)
+          }
+          Err(panic) => {
+            let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+              (*s).to_owned()
+            } else if let Some(s) = panic.downcast_ref::<String>() {
+              s.clone()
+            } else {
+              "Wayland capture thread panicked".to_owned()
+            };
+            on_closed(Some(msg.clone()));
+            Err(msg)
+          }
+        }
       })
       .map_err(error)?;
 
@@ -571,7 +647,7 @@ fn copy_pipewire_row(
           spa::param::video::VideoFormat::BGRA => (source[2], source[1], source[0], source[3]),
           spa::param::video::VideoFormat::RGBx => (source[0], source[1], source[2], 255),
           spa::param::video::VideoFormat::RGBA => (source[0], source[1], source[2], source[3]),
-          _ => unreachable!(),
+          _ => return false,
         };
         if matches!(requested_format, ColorFormat::Bgra8) {
           destination.copy_from_slice(&[b, g, r, a]);
@@ -709,7 +785,12 @@ fn run_pipewire_stream(
       if chunk_size == 0 {
         return;
       }
-      let row_bytes = size.width as usize * 4;
+      let Some(row_bytes) = (size.width as usize).checked_mul(4) else {
+        *process_error.borrow_mut() =
+          Some("Arithmetic overflow computing PipeWire row_bytes".to_owned());
+        process_loop.quit();
+        return;
+      };
       let row_stride = if stride == 0 {
         row_bytes
       } else {
@@ -738,7 +819,13 @@ fn run_pipewire_stream(
       }
 
       let source_format = user_data.format.format();
-      let mut pixels = vec![0_u8; row_bytes * size.height as usize];
+      let Some(pixel_count) = row_bytes.checked_mul(size.height as usize) else {
+        *process_error.borrow_mut() =
+          Some("Arithmetic overflow computing PipeWire pixel buffer size".to_owned());
+        process_loop.quit();
+        return;
+      };
+      let mut pixels = vec![0_u8; pixel_count];
       for output_y in 0..size.height as usize {
         let source_y = if stride < 0 {
           size.height as usize - output_y - 1
@@ -761,14 +848,21 @@ fn run_pipewire_stream(
         }
       }
 
-      let row_pitch = size.width * 4;
+      let (row_pitch, depth_pitch) = match frame_pitches(size.width, size.height, 4) {
+        Ok(p) => p,
+        Err(e) => {
+          *process_error.borrow_mut() = Some(e.to_string());
+          process_loop.quit();
+          return;
+        }
+      };
       let timestamp = (started.elapsed().as_nanos() / 100).min(i64::MAX as u128) as i64;
       on_frame(Frame {
         buffer: pixels,
         width: size.width,
         height: size.height,
         row_pitch,
-        depth_pitch: row_pitch * size.height,
+        depth_pitch,
         timestamp,
         color_format: requested_format,
         dirty_regions: Vec::new(),

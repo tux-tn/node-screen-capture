@@ -1,8 +1,9 @@
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crate::common::{bytes_per_pixel, crop_buffer, error};
+use crate::common::{bytes_per_pixel, crop_buffer, error, frame_pitches};
 use napi::Status;
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{
@@ -172,25 +173,26 @@ impl Frame {
 
   #[napi]
   pub fn crop(&self, start_x: u32, start_y: u32, end_x: u32, end_y: u32) -> Result<Self> {
+    let bpp = bytes_per_pixel(matches!(self.color_format, ColorFormat::Rgba16F));
     let (buffer, width, height) = crop_buffer(
       &self.buffer,
       self.width,
       self.height,
       self.row_pitch,
-      bytes_per_pixel(matches!(self.color_format, ColorFormat::Rgba16F)),
+      bpp,
       start_x,
       start_y,
       end_x,
       end_y,
     )?;
-    let row_pitch = width * bytes_per_pixel(matches!(self.color_format, ColorFormat::Rgba16F));
+    let (row_pitch, depth_pitch) = frame_pitches(width, height, bpp)?;
 
     Ok(Self {
       buffer,
       width,
       height,
       row_pitch,
-      depth_pitch: row_pitch * height,
+      depth_pitch,
       timestamp: self.timestamp,
       color_format: self.color_format.clone(),
       dirty_regions: Vec::new(),
@@ -222,12 +224,16 @@ impl Frame {
 
 type FrameCallback =
   Arc<ThreadsafeFunction<Frame, UnknownReturnValue, Frame, Status, false, false, 1>>;
-type ClosedCallback = Arc<ThreadsafeFunction<(), UnknownReturnValue, (), Status, false, false, 1>>;
+type ClosedCallback = Arc<
+  ThreadsafeFunction<Option<String>, UnknownReturnValue, Option<String>, Status, false, false, 1>,
+>;
 
 struct CaptureHandler {
   on_frame_arrived: FrameCallback,
   on_closed: Option<ClosedCallback>,
   scratch: Vec<u8>,
+  pending: Arc<AtomicBool>,
+  consecutive_queue_full: Arc<AtomicUsize>,
 }
 
 impl GraphicsCaptureApiHandler for CaptureHandler {
@@ -239,6 +245,8 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
       on_frame_arrived: ctx.flags.0,
       on_closed: ctx.flags.1,
       scratch: Vec::new(),
+      pending: Arc::new(AtomicBool::new(false)),
+      consecutive_queue_full: Arc::new(AtomicUsize::new(0)),
     })
   }
 
@@ -247,13 +255,30 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
     frame: &mut RustFrame,
     _capture_control: InternalCaptureControl,
   ) -> std::result::Result<(), Self::Error> {
+    if self
+      .pending
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+      .is_err()
+    {
+      return Ok(());
+    }
+
     let width = frame.width();
     let height = frame.height();
-    let timestamp = frame.timestamp().map_err(|e| e.to_string())?.Duration;
+    let timestamp = frame
+      .timestamp()
+      .map_err(|e| {
+        self.pending.store(false, Ordering::Release);
+        e.to_string()
+      })?
+      .Duration;
     let color_format = ColorFormat::from(frame.color_format());
     let dirty_regions = frame
       .dirty_regions()
-      .map_err(|e| e.to_string())?
+      .map_err(|e| {
+        self.pending.store(false, Ordering::Release);
+        e.to_string()
+      })?
       .into_iter()
       .map(|region| DirtyRegion {
         x: region.x,
@@ -262,34 +287,67 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         height: region.height,
       })
       .collect();
-    let buffer = frame.buffer().map_err(|e| e.to_string())?;
-    let row_pitch = width * bytes_per_pixel(matches!(color_format, ColorFormat::Rgba16F));
+    let buffer = frame.buffer().map_err(|e| {
+      self.pending.store(false, Ordering::Release);
+      e.to_string()
+    })?;
+    let bpp = bytes_per_pixel(matches!(color_format, ColorFormat::Rgba16F));
+    let (row_pitch, depth_pitch) = frame_pitches(width, height, bpp).map_err(|e| {
+      self.pending.store(false, Ordering::Release);
+      e.to_string()
+    })?;
     let bytes = buffer.as_nopadding_buffer(&mut self.scratch).to_vec();
 
-    let status = self.on_frame_arrived.call(
+    let pending = Arc::clone(&self.pending);
+    let failures = Arc::clone(&self.consecutive_queue_full);
+
+    let status = self.on_frame_arrived.call_with_return_value(
       Frame {
         buffer: bytes,
         width,
         height,
         row_pitch,
-        depth_pitch: row_pitch * height,
+        depth_pitch,
         timestamp,
         color_format,
         dirty_regions,
       },
       ThreadsafeFunctionCallMode::NonBlocking,
+      move |_result: Result<UnknownReturnValue>, _env: Env| {
+        pending.store(false, Ordering::Release);
+        failures.store(0, Ordering::Release);
+        Ok(())
+      },
     );
 
     match status {
-      Status::Ok | Status::QueueFull | Status::Closing => Ok(()),
-      _ => Err(format!("Failed to dispatch frame callback: {status}")),
+      Status::Ok => Ok(()),
+      Status::QueueFull => {
+        self.pending.store(false, Ordering::Release);
+        let current = self.consecutive_queue_full.fetch_add(1, Ordering::AcqRel) + 1;
+        if current >= 10 {
+          Err("Repeated frame queue saturation; stopping delivery".to_string())
+        } else {
+          Ok(())
+        }
+      }
+      Status::Closing => {
+        self.pending.store(false, Ordering::Release);
+        Err("Capture is closing".to_string())
+      }
+      _ => {
+        self.pending.store(false, Ordering::Release);
+        Err(format!("Failed to dispatch frame callback: {status}"))
+      }
     }
   }
 
   fn on_closed(&mut self) -> std::result::Result<(), Self::Error> {
+    // windows-capture does not forward on_frame_arrived errors to this hook,
+    // so it can only report that the session closed, not why it closed.
     if let Some(callback) = &self.on_closed {
-      let status = callback.call((), ThreadsafeFunctionCallMode::NonBlocking);
-      if !matches!(status, Status::Ok | Status::QueueFull | Status::Closing) {
+      let status = callback.call(None, ThreadsafeFunctionCallMode::Blocking);
+      if !matches!(status, Status::Ok | Status::Closing) {
         return Err(format!("Failed to dispatch closed callback: {status}"));
       }
     }
@@ -377,6 +435,11 @@ impl NativeCaptureControl {
   }
 }
 
+fn post_quit_message(thread_id: u32) -> std::result::Result<(), String> {
+  unsafe { PostThreadMessageW(thread_id, WM_QUIT, WPARAM::default(), LPARAM::default()) }
+    .map_err(|error| error.to_string())
+}
+
 struct PickerCaptureControl {
   thread_handle: Option<JoinHandle<std::result::Result<(), String>>>,
   thread_id: u32,
@@ -394,15 +457,7 @@ impl PickerCaptureControl {
     let post_result = if self.is_finished() {
       Ok(())
     } else {
-      unsafe {
-        PostThreadMessageW(
-          self.thread_id,
-          WM_QUIT,
-          WPARAM::default(),
-          LPARAM::default(),
-        )
-      }
-      .map_err(|error| error.to_string())
+      post_quit_message(self.thread_id)
     };
     let join_result = self.join();
     post_result.and(join_result)
@@ -420,6 +475,14 @@ impl PickerCaptureControl {
     thread_handle
       .join()
       .map_err(|_| "Failed to join capture thread".to_owned())?
+  }
+}
+
+impl Drop for PickerCaptureControl {
+  fn drop(&mut self) {
+    if !self.is_finished() {
+      let _ = post_quit_message(self.thread_id);
+    }
   }
 }
 
@@ -534,7 +597,9 @@ impl ScreenCapture {
   pub fn new(
     options: CaptureOptions,
     #[napi(ts_arg_type = "(frame: Frame) => void")] on_frame_arrived: FrameCallback,
-    #[napi(ts_arg_type = "(() => void) | undefined | null")] on_closed: Option<ClosedCallback>,
+    #[napi(ts_arg_type = "((error: string | null) => void) | undefined | null")] on_closed: Option<
+      ClosedCallback,
+    >,
   ) -> Result<Self> {
     let target_count = [
       options.monitor_index.is_some(),
@@ -791,7 +856,10 @@ impl From<RustDxgiFormat> for DxgiDuplicationFormat {
   }
 }
 
-fn convert_rgb10a2(buffer: &[u8], xr_bias: bool) -> Vec<u8> {
+fn convert_rgb10a2(buffer: &[u8], xr_bias: bool) -> Result<Vec<u8>> {
+  if buffer.len() % 4 != 0 {
+    return Err(error("RGB10A2 buffer must have a length divisible by 4"));
+  }
   let mut converted = Vec::with_capacity(buffer.len());
   for pixel in buffer.chunks_exact(4) {
     let packed = u32::from_le_bytes([pixel[0], pixel[1], pixel[2], pixel[3]]);
@@ -814,7 +882,7 @@ fn convert_rgb10a2(buffer: &[u8], xr_bias: bool) -> Vec<u8> {
       ((alpha * 255 + 1) / 3) as u8,
     ]);
   }
-  converted
+  Ok(converted)
 }
 
 fn qpc_timestamp_100ns(value: i64, frequency: i64) -> i64 {
@@ -918,18 +986,19 @@ impl DxgiDuplicationSession {
     let packed = buffer.as_nopadding_buffer(&mut scratch);
     let (bytes, color_format) = match native_format {
       RustDxgiFormat::Rgba16F => (packed.to_vec(), ColorFormat::Rgba16F),
-      RustDxgiFormat::Rgb10A2 => (convert_rgb10a2(packed, false), ColorFormat::Rgba8),
-      RustDxgiFormat::Rgb10XrA2 => (convert_rgb10a2(packed, true), ColorFormat::Rgba8),
+      RustDxgiFormat::Rgb10A2 => (convert_rgb10a2(packed, false)?, ColorFormat::Rgba8),
+      RustDxgiFormat::Rgb10XrA2 => (convert_rgb10a2(packed, true)?, ColorFormat::Rgba8),
       RustDxgiFormat::Rgba8 | RustDxgiFormat::Rgba8Srgb => (packed.to_vec(), ColorFormat::Rgba8),
       RustDxgiFormat::Bgra8 | RustDxgiFormat::Bgra8Srgb => (packed.to_vec(), ColorFormat::Bgra8),
     };
-    let row_pitch = width * bytes_per_pixel(matches!(color_format, ColorFormat::Rgba16F));
+    let bpp = bytes_per_pixel(matches!(color_format, ColorFormat::Rgba16F));
+    let (row_pitch, depth_pitch) = frame_pitches(width, height, bpp)?;
     Ok(Some(Frame {
       buffer: bytes,
       width,
       height,
       row_pitch,
-      depth_pitch: row_pitch * height,
+      depth_pitch,
       timestamp,
       color_format,
       dirty_regions: Vec::new(),
@@ -1187,6 +1256,8 @@ enum VideoEncoderOutput {
   Memory(InMemoryRandomAccessStream),
 }
 
+const MAX_IN_MEMORY_VIDEO_BYTES: u64 = 512 * 1024 * 1024;
+
 #[napi]
 pub struct VideoEncoder {
   inner: Option<RustVideoEncoder>,
@@ -1370,7 +1441,14 @@ impl VideoEncoder {
       VideoEncoderOutput::File => Ok(None),
       VideoEncoderOutput::Memory(stream) => {
         let size = stream.Size().map_err(error)?;
+        if size > MAX_IN_MEMORY_VIDEO_BYTES {
+          return Err(error(format!(
+            "Encoded stream size {size} exceeds the in-memory cap of {MAX_IN_MEMORY_VIDEO_BYTES}"
+          )));
+        }
         let size_u32 = u32::try_from(size).map_err(|_| error("Encoded stream exceeds 4 GiB"))?;
+        let size_usize = usize::try_from(size)
+          .map_err(|_| error("Encoded stream size does not fit in platform address space"))?;
         let input = stream.GetInputStreamAt(0).map_err(error)?;
         let reader = DataReader::CreateDataReader(&input).map_err(error)?;
         reader
@@ -1378,7 +1456,7 @@ impl VideoEncoder {
           .map_err(error)?
           .join()
           .map_err(error)?;
-        let mut bytes = vec![0; size as usize];
+        let mut bytes = vec![0; size_usize];
         reader.ReadBytes(&mut bytes).map_err(error)?;
         Ok(Some(bytes.into()))
       }
