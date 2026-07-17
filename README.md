@@ -421,6 +421,8 @@ JPEG XR and RGB16F image encoding are Windows-only. The macOS and Wayland backen
 
 `VideoEncoder` uses Windows Media Foundation. Constructing it on macOS or Wayland throws an explicit unsupported error.
 
+All `VideoEncoder` methods are synchronous and may perform CPU-intensive conversion or blocking Media Foundation I/O. For latency-sensitive applications, run encoding in a Node.js worker thread rather than on the main event loop.
+
 ```ts
 class VideoEncoder {
   constructor(options: VideoEncoderOptions)
@@ -461,6 +463,7 @@ interface AudioSettings {
 
 - Set `path` for file output. `finish()` returns `null` for file output.
 - Omit `path` for in-memory output. `finish()` returns the encoded `Buffer`.
+- In-memory output is limited to 512 MiB; use file output for longer recordings.
 - Audio is disabled when `audio` is omitted.
 - `sendFrame()` and `sendFrameWithAudio()` use the frame's timestamp.
 - `sendAudioBuffer()` uses the encoder's audio clock; its optional timestamp is accepted for API compatibility.
