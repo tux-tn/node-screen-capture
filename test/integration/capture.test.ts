@@ -26,7 +26,7 @@ describe("native capture e2e", () => {
 		async () => {
 			if (!isSupported()) return;
 
-			const isWindows = process.platform === "win32";
+			const supportsDirectMonitor = process.platform === "win32" || process.platform === "darwin";
 			let resolveFrame!: (frame: Frame) => void;
 			let resolveClosed!: () => void;
 			let settled = false;
@@ -43,7 +43,7 @@ describe("native capture e2e", () => {
 			});
 
 			const capture = new ScreenCapture(
-				isWindows
+				supportsDirectMonitor
 					? { monitorIndex: 1, colorFormat: ColorFormat.Bgra8 }
 					: { usePicker: true, colorFormat: ColorFormat.Bgra8 },
 				(frame) => resolveFrame(frame),

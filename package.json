@@ -62,7 +62,7 @@
 		"artifacts": "napi artifacts",
 		"build": "tsdown",
 		"build:addon": "napi build --platform --release --esm",
-		"build:addon:debug": "napi build --platform",
+		"build:addon:debug": "napi build --platform --esm",
 		"changelog": "conventional-changelog -p conventionalcommits",
 		"format": "oxfmt --check",
 		"format:fix": "oxfmt",
@@ -74,7 +74,7 @@
 		"test": "vitest run test/unit",
 		"test:coverage": "vitest run --coverage",
 		"test:capture": "node scripts/capture-smoke.js",
-		"test:e2e": "vitest run test/integration",
+		"test:e2e": "vitest run test/integration --pool=forks",
 		"test:watch": "vitest",
 		"version": "napi version"
 	},
