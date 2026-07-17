@@ -2,7 +2,7 @@
 [package]
 edition = "2024"
 name = "screen_capture_node"
-version = "1.0.0"
+version = "1.1.0"
 
 [lib]
 crate-type = ["cdylib"]

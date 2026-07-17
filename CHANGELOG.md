@@ -1,3 +1,17 @@
+## [1.1.0](https://github.com/tux-tn/node-screen-capture/compare/v1.0.0...v1.1.0) (2026-07-17)
+
+### Features
+
+* add macOS capture and harden platform backends ([9c5254e](https://github.com/tux-tn/node-screen-capture/commit/9c5254e43833ce877143a224198bdc68ad984a67))
+
+### Bug Fixes
+
+* **macos:** pin apple-metal for macOS 15 SDK ([a1e0e30](https://github.com/tux-tn/node-screen-capture/commit/a1e0e30718954333abd2d8090b7dfbb685d9135c))
+* **macos:** show macOS content picker ([ecb8782](https://github.com/tux-tn/node-screen-capture/commit/ecb87820fb6b14eb2008872dbee616a215ff5999))
+* **macos:** stabilize capture frame delivery ([fc06cbe](https://github.com/tux-tn/node-screen-capture/commit/fc06cbe9dc26073e01aac79014b09e11ef88b007))
+* **native:** harden backend resource handling ([e912ee3](https://github.com/tux-tn/node-screen-capture/commit/e912ee3b179100b71f69fb58321eaf632e9364c1))
+* silence unused Windows message result ([fa06df0](https://github.com/tux-tn/node-screen-capture/commit/fa06df07992f652e0b804b1ae8906ed019bb4159))
+
 ## 1.0.0 (2026-07-14)
 
 ### Features

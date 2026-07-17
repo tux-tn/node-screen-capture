@@ -1,6 +1,6 @@
 {
 	"name": "@screen-capture/node",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"description": "Cross-platform native screen capture for Node.js on Windows, macOS, and Linux/Wayland",
 	"homepage": "https://github.com/tux-tn/node-screen-capture#readme",
 	"author": "Sarhan Aissi <npm@tux.tn>",
